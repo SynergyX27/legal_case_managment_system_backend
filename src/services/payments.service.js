@@ -106,7 +106,8 @@ async function reservePayment(user, invoiceId) {
       },
       success_url: `${env.APP_ORIGIN}/invoices?payment=success&invoiceId=${encodeURIComponent(invoice.id)}`,
       cancel_url: `${env.APP_ORIGIN}/invoices?payment=cancelled&invoiceId=${encodeURIComponent(invoice.id)}`,
-      expires_at: Math.floor(Date.now() / 1000) + 1800,
+      // Buffer above Stripe's 30-minute minimum for database/API latency and retries.
+      expires_at: Math.floor(Date.now() / 1000) + 45 * 60,
     };
     const result = await db.query(
       "INSERT INTO legalflow.invoice_payments(id,invoice_id,user_id,amount_cents,currency,status,checkout_parameters) VALUES($1,$2,$3,$4,'usd','creating',$5) RETURNING *",
@@ -292,7 +293,9 @@ export async function createCheckout(user, invoiceId) {
     if (error instanceof HttpError) throw error;
     if (
       error.type === "StripeInvalidRequestError" &&
-      error.param === "expires_at"
+      (error.param === "expires_at" ||
+        error.raw?.param === "expires_at" ||
+        /expires_at|expiration (?:time|timestamp)/i.test(error.message || ""))
     ) {
       await pool.query(
         "UPDATE legalflow.invoice_payments SET status='expired',updated_at=now() WHERE id=$1 AND status='creating' AND stripe_session_id IS NULL",
@@ -308,6 +311,13 @@ export async function createCheckout(user, invoiceId) {
         operation: "stripe.checkout",
         invoiceId,
         code: error.code || error.type || "provider_error",
+        parameter: error.param || error.raw?.param || null,
+        stripeRequestId: error.requestId || error.raw?.requestId || null,
+        stripeStatus: error.statusCode || null,
+        message: String(error.message || "No provider detail")
+          .replace(/\b(?:sk|pk|rk)_(?:test|live)_[^\s"']+/g, "[redacted-key]")
+          .replace(/[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/g, "[redacted-email]")
+          .slice(0, 1000),
       }),
     );
     throw new HttpError(
