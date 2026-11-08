@@ -1,3 +1,4 @@
+import { queuePaymentCompleted } from "./email-events.service.js";
 import { can } from "./access.service.js";
 import Stripe from "stripe";
 import { randomUUID } from "node:crypto";
@@ -208,6 +209,19 @@ export async function applyStripeSession(session, event = null) {
           }),
         ],
       );
+      await queuePaymentCompleted(
+        db,
+        {
+          ...invoice.data,
+          id: invoiceId,
+          number: invoice.number,
+          caseId: invoice.case_id,
+          clientId: invoice.client_id,
+          status: "Paid",
+          paidAt,
+        },
+        "stripe",
+      );
       const actor = { id: payment.user_id };
       await activity(
         db,
@@ -230,7 +244,12 @@ export async function applyStripeSession(session, event = null) {
       ).rows;
       await notify(
         db,
-        [payment.user_id, c?.manager_id, ...owners.map((o) => o.id)],
+        [
+          payment.user_id,
+          c?.manager_id,
+          c?.staff_id,
+          ...owners.map((o) => o.id),
+        ],
         "invoice",
         `${invoice.number} paid online`,
         "/invoices",

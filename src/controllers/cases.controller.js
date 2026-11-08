@@ -1,3 +1,4 @@
+import { queueCaseOpened } from "../services/email-events.service.js";
 import { permit } from "../services/access.service.js";
 import { findUser } from "../models/user.model.js";
 import { randomUUID } from "node:crypto";
@@ -65,6 +66,7 @@ export async function putCase(req, res) {
       "INSERT INTO legalflow.cases(id,number,client_id,staff_id,manager_id,data) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(id) DO UPDATE SET number=$2,client_id=$3,staff_id=$4,manager_id=$5,data=$6,updated_at=now()",
       [v.id, v.number, v.clientId, v.staffId || null, v.managerId || null, v],
     );
+    if (!old) await queueCaseOpened(db, v);
     await activity(
       db,
       req.user,

@@ -1,3 +1,4 @@
+import * as mail from "../controllers/email.controller.js";
 import { Router } from "express";
 import multer from "multer";
 import { rateLimit } from "express-rate-limit";
@@ -27,6 +28,16 @@ api.use(requireAuth);
 api.post("/auth/logout", auth.logout);
 api.patch("/auth/profile", auth.profile);
 api.get("/workspace", c.getWorkspace);
+api.get("/email/status", mail.emailStatus);
+const emailAdminLimit = rateLimit({
+  windowMs: 60000,
+  limit: 5,
+  standardHeaders: "draft-8",
+  legacyHeaders: false,
+  message: { error: "Wait a minute before trying email diagnostics again" },
+});
+api.post("/email/verify", emailAdminLimit, mail.verifyEmail);
+api.post("/email/retry", emailAdminLimit, mail.retryEmails);
 api.get("/payments/config", payments.configuration);
 api.post("/invoices/:id/checkout", payments.checkout);
 api.post("/invoices/:id/payment-status", payments.status);

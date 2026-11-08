@@ -47,6 +47,7 @@ export function createApp() {
       "SELECT manager_id,permissions FROM legalflow.users LIMIT 1",
     );
     await pool.query("SELECT deleted_at FROM legalflow.invoices LIMIT 1");
+    await pool.query("SELECT 1 FROM legalflow.email_outbox LIMIT 1");
     res.json({ ok: true });
   });
   app.use(

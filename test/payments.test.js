@@ -323,6 +323,16 @@ test("Stripe checkout authorization, idempotency and signed payment confirmation
         .status,
       "Sent",
     );
+    assert.equal(
+      (
+        await pool.query(
+          "SELECT count(*)::int AS n FROM legalflow.email_outbox WHERE event_key=$1",
+          [`invoice.paid:${id}`],
+        )
+      ).rows[0].n,
+      0,
+      "Unverified and mismatched payments cannot queue receipts",
+    );
     assert.equal((await webhook(session, { id: eventId })).status, 200);
     assert.equal((await webhook(session, { id: eventId })).status, 200);
     assert.equal((await webhook(session)).status, 200);
@@ -331,6 +341,23 @@ test("Stripe checkout authorization, idempotency and signed payment confirmation
     );
     assert.equal(current.status, "Paid");
     assert.equal(current.paymentMethod, "stripe");
+    const receiptRows = (
+      await pool.query(
+        "SELECT to_email FROM legalflow.email_outbox WHERE event_key=$1",
+        [`invoice.paid:${id}`],
+      )
+    ).rows;
+    assert.deepEqual(
+      receiptRows.map((r) => r.to_email).sort(),
+      [
+        "customer@payments.invalid",
+        "owner@payments.invalid",
+        "manager@payments.invalid",
+        "staff@payments.invalid",
+      ].sort(),
+      "Repeated webhooks queue one receipt for each intended recipient",
+    );
+
     assert(current.paidAt);
     assert.equal(
       (await customer.request(`/invoices/${id}/checkout`, "POST")).status,

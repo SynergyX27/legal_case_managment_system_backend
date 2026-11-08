@@ -284,6 +284,43 @@ test("HTTP API, PostgreSQL persistence and access isolation", async (t) => {
       403,
     );
 
+    assert.equal(
+      (
+        await pool.query(
+          "SELECT count(*)::int AS n FROM legalflow.email_outbox WHERE event_key=$1",
+          [`case.created:${caseId}`],
+        )
+      ).rows[0].n,
+      1,
+      "Case edits do not resend the opened email",
+    );
+    assert.equal(
+      (
+        await pool.query(
+          "SELECT count(*)::int AS n FROM legalflow.email_outbox WHERE event_key=$1",
+          [`invoice.issued:${inv1}`],
+        )
+      ).rows[0].n,
+      1,
+      "Sent invoices queue a client email",
+    );
+    assert.equal(
+      (
+        await pool.query(
+          "SELECT count(*)::int AS n FROM legalflow.email_outbox WHERE event_key=$1",
+          [`invoice.issued:${inv2}`],
+        )
+      ).rows[0].n,
+      0,
+      "Draft invoices never queue a client email",
+    );
+    assert.equal((await staff.request("/email/status")).status, 403);
+    assert.equal((await customer.request("/email/status")).status, 403);
+    assert.equal(
+      (await staff.request("/email/retry", { method: "POST" })).status,
+      403,
+    );
+    assert.equal((await owner.request("/email/status")).status, 200);
     const draftInvoice = w.invoices.find((i) => i.id === inv2);
     assert.equal(
       (
@@ -307,6 +344,17 @@ test("HTTP API, PostgreSQL persistence and access isolation", async (t) => {
       (await customer.request("/workspace")).data.invoices.length,
       2,
     );
+    assert.equal(
+      (
+        await pool.query(
+          "SELECT count(*)::int AS n FROM legalflow.email_outbox WHERE event_key=$1",
+          [`invoice.paid:${inv2}`],
+        )
+      ).rows[0].n,
+      4,
+      "Manual payment notifies client, owner, assigned manager and staff",
+    );
+
     assert.equal(
       (await owner.request(`/cases/${caseId}`, { method: "DELETE" })).status,
       409,

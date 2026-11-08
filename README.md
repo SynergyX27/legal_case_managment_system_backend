@@ -36,3 +36,7 @@ See `../STRIPE_SETUP.md`. Apply migration 002, set backend-only STRIPE_SECRET_KE
 ## Permissions and teams
 
 Apply migration 003 before starting this version. See `../PERMISSIONS_UPDATE.md`. Permission defaults are stored per manager/staff role, with individual overrides; case and invoice mutations recheck access on the server. Every saved case requires an active staff member and that person’s active manager. Unpaid invoice deletion retains audit/payment history and refuses active or paid checkouts.
+
+## Automated emails
+
+Apply migration 004 before starting this version. See `../EMAIL_SETUP.md`. Cases and issued invoices queue client notifications; Stripe-confirmed and manually recorded payments queue client, owner, manager and staff receipts. The server runs a durable PostgreSQL outbox worker. SMTP credentials come only from backend `.env`, private `.env.smtp` or process environment. Owners can inspect/retry delivery in Settings. Render free services block SMTP port 465, so this connection needs a paid backend instance.

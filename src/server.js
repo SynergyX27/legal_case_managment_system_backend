@@ -1,3 +1,4 @@
+import { startEmailWorker } from "./services/email.service.js";
 import { createApp } from "./app.js";
 import { pool } from "./config/database.js";
 import { env } from "./config/env.js";
@@ -5,6 +6,8 @@ await pool.query("SELECT 1 FROM legalflow.migrations LIMIT 1");
 await pool.query("SELECT 1 FROM legalflow.invoice_payments LIMIT 1");
 await pool.query("SELECT manager_id,permissions FROM legalflow.users LIMIT 1");
 await pool.query("SELECT deleted_at FROM legalflow.invoices LIMIT 1");
+await pool.query("SELECT 1 FROM legalflow.email_outbox LIMIT 1");
+const emailWorker = startEmailWorker();
 const server = createApp().listen(env.PORT, "0.0.0.0", () =>
   console.log(`LegalFlow API listening on port ${env.PORT}`),
 );
@@ -16,6 +19,7 @@ async function shutdown() {
   shuttingDown = true;
   const timer = setTimeout(() => process.exit(1), 15000).unref();
   server.close(async () => {
+    await emailWorker.stop();
     await pool.end();
     clearTimeout(timer);
     process.exit(0);

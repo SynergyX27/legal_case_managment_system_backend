@@ -1,3 +1,7 @@
+import {
+  queueInvoiceIssued,
+  queuePaymentCompleted,
+} from "../services/email-events.service.js";
 import { transaction } from "../config/database.js";
 import { assert } from "../utils/errors.js";
 import { permit } from "../services/access.service.js";
@@ -71,6 +75,13 @@ export async function putInvoice(req, res) {
         "INSERT INTO legalflow.invoices(id,number,case_id,client_id,data) VALUES($1,$2,$3,$4,$5)",
         [v.id, number, v.caseId, v.clientId, data],
       );
+    if (v.status === "Paid" && old?.data.status !== "Paid")
+      await queuePaymentCompleted(db, data, "manual");
+    else if (
+      ["Sent", "Overdue"].includes(v.status) &&
+      (!old || old.data.status === "Draft")
+    )
+      await queueInvoiceIssued(db, data);
     await activity(db, req.user, v.caseId, `${number}: ${v.status}`, "invoice");
     await audit(db, req.user, "invoice.saved", v.id);
     if (v.status !== "Draft") {
