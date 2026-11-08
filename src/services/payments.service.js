@@ -244,7 +244,102 @@ export async function applyStripeSession(session, event = null) {
     }
   });
 }
-export async function createCheckout(user, invoiceId) {
+// Reconcile a legacy key before rotating it. Never create another checkout
+// until Stripe has been checked for a session with this exact payment identity.
+async function recoverChangedCheckout(user, payment) {
+  assert(
+    Date.now() - new Date(payment.created_at).getTime() >= 60000,
+    409,
+    "Stripe is reconciling this checkout. Wait one minute and try again",
+  );
+  const matches = [];
+  let scanned = 0;
+  const since = Math.max(
+    0,
+    Math.floor(new Date(payment.created_at).getTime() / 1000) - 600,
+  );
+  for await (const session of stripeClient().checkout.sessions.list({
+    created: { gte: since },
+    limit: 100,
+  })) {
+    scanned++;
+    assert(
+      scanned <= 500,
+      409,
+      "This checkout needs an owner payment review before it can be retried",
+    );
+    if (
+      session.metadata?.paymentId === payment.id &&
+      session.metadata?.invoiceId === payment.invoice_id &&
+      session.client_reference_id === payment.invoice_id
+    )
+      matches.push(session);
+  }
+  assert(
+    matches.length <= 1,
+    409,
+    "Multiple Stripe sessions require an owner review before retrying",
+  );
+  if (matches.length) {
+    const session = await stripeClient().checkout.sessions.retrieve(
+      matches[0].id,
+    );
+    // Validate the current Stripe object before linking it to a local attempt.
+    assert(
+      session.mode === "payment" &&
+        session.metadata?.paymentId === payment.id &&
+        session.metadata?.invoiceId === payment.invoice_id &&
+        session.client_reference_id === payment.invoice_id &&
+        session.amount_total === Number(payment.amount_cents) &&
+        session.currency === payment.currency &&
+        session.livemode === env.STRIPE_SECRET_KEY.startsWith("sk_live_"),
+      409,
+      "The existing Stripe checkout does not match this invoice. Ask the owner to review it",
+    );
+    await transaction(async (db) => {
+      await authorizedInvoice(user, payment.invoice_id, db, true);
+      const current = (
+        await db.query(
+          "SELECT * FROM legalflow.invoice_payments WHERE id=$1 FOR UPDATE",
+          [payment.id],
+        )
+      ).rows[0];
+      assert(
+        current && !["expired"].includes(current.status),
+        409,
+        "Checkout changed during reconciliation. Refresh and try again",
+      );
+      assert(
+        !current.stripe_session_id || current.stripe_session_id === session.id,
+        409,
+        "This payment already has a different Stripe session",
+      );
+      await db.query(
+        "UPDATE legalflow.invoice_payments SET stripe_session_id=$2,status=CASE WHEN status='creating' THEN 'open' ELSE status END,updated_at=now() WHERE id=$1",
+        [payment.id, session.id],
+      );
+      await audit(db, user, "invoice.checkout-recovered", payment.invoice_id);
+    });
+    await applyStripeSession(session);
+    return session.payment_status === "paid";
+  }
+  // Only an uncreated local attempt with no Stripe session can be released.
+  await transaction(async (db) => {
+    const invoice = await authorizedInvoice(user, payment.invoice_id, db, true);
+    assert(
+      ["Sent", "Overdue"].includes(invoice.data.status),
+      409,
+      "Invoice status changed. Refresh before trying again",
+    );
+    await db.query(
+      "UPDATE legalflow.invoice_payments SET status='expired',updated_at=now() WHERE id=$1 AND status='creating' AND stripe_session_id IS NULL",
+      [payment.id],
+    );
+    await audit(db, user, "invoice.checkout-key-renewed", payment.invoice_id);
+  });
+  return false;
+}
+export async function createCheckout(user, invoiceId, allowRecovery = true) {
   assert(
     paymentConfiguration().enabled,
     503,
@@ -264,12 +359,17 @@ export async function createCheckout(user, invoiceId) {
         );
         if (cleaned.rowCount) payment = cleaned.rows[0];
       }
-      // Never retry an unknown session beyond Stripe's idempotency retention window.
-      assert(
-        Date.now() - new Date(payment.created_at).getTime() < 23 * 3600000,
-        409,
-        "This checkout needs payment reconciliation. Ask the owner to check it",
-      );
+      // Do not blindly reuse a key after Stripe may have pruned it. Reconcile
+      // the original attempt with Stripe before allowing a replacement.
+      if (Date.now() - new Date(payment.created_at).getTime() >= 23 * 3600000) {
+        assert(
+          allowRecovery,
+          409,
+          "This checkout needs an owner payment review",
+        );
+        if (await recoverChangedCheckout(user, payment)) return { paid: true };
+        return await createCheckout(user, invoiceId, false);
+      }
       const session = await stripeClient().checkout.sessions.create(
         payment.checkout_parameters,
         { idempotencyKey: `legalflow-checkout-${payment.id}` },
@@ -304,6 +404,34 @@ export async function createCheckout(user, invoiceId) {
     return { url: session.url };
   } catch (error) {
     if (error instanceof HttpError) throw error;
+    if (
+      error.type === "StripeIdempotencyError" ||
+      error.rawType === "idempotency_error" ||
+      error.raw?.type === "idempotency_error"
+    ) {
+      assert(
+        allowRecovery,
+        409,
+        "Stripe checkout still requires an owner review. No additional payment was started",
+      );
+      try {
+        if (await recoverChangedCheckout(user, payment)) return { paid: true };
+        return await createCheckout(user, invoiceId, false);
+      } catch (recoveryError) {
+        if (recoveryError instanceof HttpError) throw recoveryError;
+        console.error(
+          JSON.stringify({
+            operation: "stripe.checkout-recovery",
+            invoiceId,
+            code: recoveryError.code || recoveryError.type || "provider_error",
+          }),
+        );
+        throw new HttpError(
+          502,
+          "Could not verify the earlier Stripe checkout. No new attempt was started; please try again",
+        );
+      }
+    }
     if (
       error.type === "StripeInvalidRequestError" &&
       (error.param === "expires_at" ||
