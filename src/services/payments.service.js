@@ -1,3 +1,4 @@
+import { can } from "./access.service.js";
 import Stripe from "stripe";
 import { randomUUID } from "node:crypto";
 import { env } from "../config/env.js";
@@ -49,9 +50,15 @@ async function authorizedInvoice(user, id, db = pool, lock = false) {
     )
   ).rows[0];
   assert(row, 404, "Invoice not found");
+  assert(!row.deleted_at, 404, "Invoice not found");
   await accessibleCase(user, row.case_id, db);
   assert(
-    ["owner", "manager"].includes(user.role) ||
+    [
+      "invoices.view",
+      "invoices.create",
+      "invoices.edit",
+      "invoices.delete",
+    ].some((k) => can(user, k)) ||
       (user.role === "customer" &&
         user.client_id === row.client_id &&
         row.data.status !== "Draft"),

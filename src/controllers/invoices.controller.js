@@ -1,11 +1,10 @@
 import { transaction } from "../config/database.js";
 import { assert } from "../utils/errors.js";
-import { biller } from "../services/access.service.js";
+import { permit } from "../services/access.service.js";
 import { accessibleCase } from "../models/case.model.js";
 import { audit, activity, notify } from "../models/audit.model.js";
 import * as schema from "../validators/schemas.js";
 export async function putInvoice(req, res) {
-  biller(req.user);
   const v = schema.invoiceInput.parse({ ...req.body, id: req.params.id });
   await transaction(async (db) => {
     const c = await accessibleCase(req.user, v.caseId, db, { lock: true });
@@ -20,6 +19,8 @@ export async function putInvoice(req, res) {
         [v.id],
       )
     ).rows[0];
+    permit(req.user, old ? "invoices.edit" : "invoices.create");
+    assert(!old?.deleted_at, 409, "This invoice has been deleted");
     if (old) {
       assert(
         typeof req.body.updatedAt === "string" &&
@@ -36,9 +37,11 @@ export async function putInvoice(req, res) {
     }
     if (old) {
       assert(
-        old.data.paymentMethod !== "stripe",
+        old.data.paymentMethod !== "stripe" &&
+          old.data.status !== "Paid" &&
+          !old.data.paidAt,
         409,
-        "An invoice paid through Stripe cannot be edited",
+        "Paid invoices cannot be edited",
       );
       const active = await db.query(
         "SELECT 1 FROM legalflow.invoice_payments WHERE invoice_id=$1 AND status IN ('creating','open','processing')",
@@ -58,10 +61,16 @@ export async function putInvoice(req, res) {
         ? old?.data.paidAt || new Date().toISOString()
         : undefined;
     const data = { ...v, number, ...(paidAt ? { paidAt } : {}) };
-    await db.query(
-      "INSERT INTO legalflow.invoices(id,number,case_id,client_id,data) VALUES($1,$2,$3,$4,$5) ON CONFLICT(id) DO UPDATE SET data=$5,updated_at=now()",
-      [v.id, number, v.caseId, v.clientId, data],
-    );
+    if (old)
+      await db.query(
+        "UPDATE legalflow.invoices SET data=$2,updated_at=now() WHERE id=$1",
+        [v.id, data],
+      );
+    else
+      await db.query(
+        "INSERT INTO legalflow.invoices(id,number,case_id,client_id,data) VALUES($1,$2,$3,$4,$5)",
+        [v.id, number, v.caseId, v.clientId, data],
+      );
     await activity(db, req.user, v.caseId, `${number}: ${v.status}`, "invoice");
     await audit(db, req.user, "invoice.saved", v.id);
     if (v.status !== "Draft") {
@@ -78,6 +87,63 @@ export async function putInvoice(req, res) {
         "/invoices",
       );
     }
+  });
+  res.json({ ok: true });
+}
+
+export async function deleteInvoice(req, res) {
+  permit(req.user, "invoices.delete");
+  const id = schema.id.parse(req.params.id);
+  await transaction(async (db) => {
+    const initial = (
+      await db.query(
+        "SELECT case_id FROM legalflow.invoices WHERE id=$1 AND deleted_at IS NULL",
+        [id],
+      )
+    ).rows[0];
+    assert(initial, 404, "Invoice not found");
+    await accessibleCase(req.user, initial.case_id, db, { lock: true });
+    const invoice = (
+      await db.query(
+        "SELECT * FROM legalflow.invoices WHERE id=$1 FOR UPDATE",
+        [id],
+      )
+    ).rows[0];
+    assert(!invoice.deleted_at, 404, "Invoice not found");
+    assert(
+      typeof req.body?.updatedAt === "string" &&
+        new Date(req.body.updatedAt).getTime() === invoice.updated_at.getTime(),
+      409,
+      "Invoice changed on another device. Reload before deleting",
+    );
+    assert(
+      invoice.data.status !== "Paid" &&
+        !invoice.data.paidAt &&
+        invoice.data.paymentMethod !== "stripe",
+      409,
+      "Paid invoices cannot be deleted",
+    );
+    const payments = await db.query(
+      "SELECT 1 FROM legalflow.invoice_payments WHERE invoice_id=$1 AND status IN ('creating','open','processing','paid')",
+      [id],
+    );
+    assert(
+      !payments.rowCount,
+      409,
+      "This invoice has a payment or active checkout. Wait for confirmation or checkout expiry before deleting",
+    );
+    await db.query(
+      "UPDATE legalflow.invoices SET deleted_at=now(),updated_at=now() WHERE id=$1",
+      [id],
+    );
+    await activity(
+      db,
+      req.user,
+      invoice.case_id,
+      invoice.number + " deleted",
+      "invoice",
+    );
+    await audit(db, req.user, "invoice.deleted", id);
   });
   res.json({ ok: true });
 }

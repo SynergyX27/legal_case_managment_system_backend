@@ -32,3 +32,7 @@ Health endpoints: `GET /api/health/live`, `GET /api/health/ready`. The latter ch
 ## Stripe payments
 
 See `../STRIPE_SETUP.md`. Apply migration 002, set backend-only STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET, and register the public backend endpoint `/api/payments/stripe/webhook`. Checkout is hosted by Stripe; no publishable key is needed on the frontend. The raw-body webhook route precedes JSON/CSRF middleware and requires a valid Stripe signature. Customer checkout and verification routes require the existing session, CSRF and invoice permissions.
+
+## Permissions and teams
+
+Apply migration 003 before starting this version. See `../PERMISSIONS_UPDATE.md`. Permission defaults are stored per manager/staff role, with individual overrides; case and invoice mutations recheck access on the server. Every saved case requires an active staff member and that person’s active manager. Unpaid invoice deletion retains audit/payment history and refuses active or paid checkouts.

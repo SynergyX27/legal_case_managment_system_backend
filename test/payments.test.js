@@ -32,12 +32,40 @@ test("Stripe checkout authorization, idempotency and signed payment confirmation
   const stripe = stripeClient(),
     sessions = new Map(),
     keys = new Map();
+  const conflictingKeys = new Set();
+  let failListing = false;
   let failAfterCreate = false;
+  let failBeforeCreate = false;
   const originalCreate = stripe.checkout.sessions.create,
-    originalRetrieve = stripe.checkout.sessions.retrieve;
+    originalRetrieve = stripe.checkout.sessions.retrieve,
+    originalList = stripe.checkout.sessions.list;
   stripe.checkout.sessions.create = async (parameters, options) => {
+    if (conflictingKeys.has(options.idempotencyKey))
+      throw Object.assign(
+        new Error("Key parameters differ from the cached request"),
+        { type: "StripeIdempotencyError", rawType: "idempotency_error" },
+      );
+    assert(
+      !Object.hasOwn(parameters, "payment_method_types"),
+      "Removed Stripe parameter must never be sent",
+    );
+    if (failBeforeCreate) {
+      failBeforeCreate = false;
+      throw Object.assign(
+        new Error("simulated failure before provider processing"),
+        { type: "StripeConnectionError" },
+      );
+    }
     let id = keys.get(options.idempotencyKey);
     if (!id) {
+      if (parameters.expires_at <= Math.floor(Date.now() / 1000) + 1800) {
+        throw Object.assign(
+          new Error(
+            "expires_at must be between 30 minutes and 24 hours after Checkout Session creation",
+          ),
+          { type: "StripeInvalidRequestError" },
+        );
+      }
       id = "cs_test_" + randomUUID();
       keys.set(options.idempotencyKey, id);
       sessions.set(id, {
@@ -65,6 +93,15 @@ test("Stripe checkout authorization, idempotency and signed payment confirmation
   stripe.checkout.sessions.retrieve = async (id) => {
     assert(sessions.has(id));
     return structuredClone(sessions.get(id));
+  };
+  stripe.checkout.sessions.list = function () {
+    return (async function* () {
+      if (failListing)
+        throw Object.assign(new Error("temporary list failure"), {
+          type: "StripeConnectionError",
+        });
+      for (const session of sessions.values()) yield structuredClone(session);
+    })();
   };
   try {
     await migrate();
@@ -141,6 +178,27 @@ test("Stripe checkout authorization, idempotency and signed payment confirmation
     await owner.login("owner");
     await customer.login("customer");
     await other.login("other");
+    const managerRecord = await createUserRecord(
+      {
+        name: "Payment manager",
+        email: "manager@payments.invalid",
+        username: "manager",
+        password: "Payment-test-password-123",
+        role: "manager",
+      },
+      ownerRecord,
+    );
+    const staffRecord = await createUserRecord(
+      {
+        name: "Payment staff",
+        email: "staff@payments.invalid",
+        username: "staff",
+        password: "Payment-test-password-123",
+        role: "staff",
+        managerId: managerRecord.id,
+      },
+      ownerRecord,
+    );
     const caseId = randomUUID();
     assert.equal(
       (
@@ -148,6 +206,8 @@ test("Stripe checkout authorization, idempotency and signed payment confirmation
           id: caseId,
           number: "PAY-001",
           title: "Payment case",
+          staffId: staffRecord.id,
+          managerId: managerRecord.id,
           clientId: customerRecord.client_id,
           residentName: "Tenant",
           type: "Notice",
@@ -366,6 +426,206 @@ test("Stripe checkout authorization, idempotency and signed payment confirmation
         .status,
       404,
     );
+    // Legacy attempts can carry an expiry at or below Stripe's minimum. Validation
+    // errors do not create a session; reset that reservation without touching paid data.
+    const legacy = await invoice();
+    failBeforeCreate = true;
+    assert.equal(
+      (await customer.request(`/invoices/${legacy}/checkout`, "POST")).status,
+      502,
+    );
+    const legacyAttempt = (
+      await pool.query(
+        "SELECT * FROM legalflow.invoice_payments WHERE invoice_id=$1",
+        [legacy],
+      )
+    ).rows[0];
+    assert(
+      legacyAttempt.checkout_parameters.expires_at >=
+        Math.floor(Date.now() / 1000) + 2600,
+    );
+    await pool.query(
+      "UPDATE legalflow.invoice_payments SET checkout_parameters=jsonb_set(checkout_parameters,'{expires_at}',$2::jsonb) WHERE id=$1",
+      [legacyAttempt.id, JSON.stringify(Math.floor(Date.now() / 1000) + 1790)],
+    );
+    const legacyReply = await customer.request(
+      `/invoices/${legacy}/checkout`,
+      "POST",
+    );
+    assert.equal(legacyReply.status, 409);
+    assert.match(legacyReply.data.error, /expired/);
+    assert.equal(
+      (await customer.request(`/invoices/${legacy}/checkout`, "POST")).status,
+      200,
+    );
+    assert.equal(
+      [...sessions.values()].filter((s) => s.metadata.invoiceId === legacy)
+        .length,
+      1,
+    );
+    const legacyMethods = await invoice();
+    failBeforeCreate = true;
+    assert.equal(
+      (await customer.request(`/invoices/${legacyMethods}/checkout`, "POST"))
+        .status,
+      502,
+    );
+    const methodsAttempt = (
+      await pool.query(
+        "SELECT * FROM legalflow.invoice_payments WHERE invoice_id=$1",
+        [legacyMethods],
+      )
+    ).rows[0];
+    await pool.query(
+      "UPDATE legalflow.invoice_payments SET checkout_parameters=checkout_parameters||$2::jsonb WHERE id=$1",
+      [methodsAttempt.id, JSON.stringify({ payment_method_types: ["card"] })],
+    );
+    assert.equal(
+      (await customer.request(`/invoices/${legacyMethods}/checkout`, "POST"))
+        .status,
+      200,
+    );
+    assert(keys.has(`legalflow-checkout-${methodsAttempt.id}`));
+    assert(
+      !Object.hasOwn(
+        (
+          await pool.query(
+            "SELECT checkout_parameters FROM legalflow.invoice_payments WHERE id=$1",
+            [methodsAttempt.id],
+          )
+        ).rows[0].checkout_parameters,
+        "payment_method_types",
+      ),
+    );
+    // Dashboard-enabled delayed methods remain unpaid until confirmed; a final
+    // failure releases checkout, and an out-of-order failure cannot undo Paid.
+    await webhook(pendingSession, {
+      type: "checkout.session.async_payment_failed",
+    });
+    assert.equal(
+      (await customer.request(`/invoices/${pending}/checkout`, "POST")).status,
+      200,
+    );
+    await webhook(session, { type: "checkout.session.async_payment_failed" });
+    assert.equal(
+      (await customer.request(`/invoices/${id}/payment-status`, "POST")).data
+        .status,
+      "Paid",
+    );
+    async function breakLegacyKey(id, providerSession = false) {
+      if (providerSession) failAfterCreate = true;
+      else failBeforeCreate = true;
+      assert.equal(
+        (await customer.request(`/invoices/${id}/checkout`, "POST")).status,
+        502,
+      );
+      const attempt = (
+        await pool.query(
+          "SELECT * FROM legalflow.invoice_payments WHERE invoice_id=$1",
+          [id],
+        )
+      ).rows[0];
+      conflictingKeys.add(`legalflow-checkout-${attempt.id}`);
+      await pool.query(
+        "UPDATE legalflow.invoice_payments SET created_at=now()-interval '2 minutes' WHERE id=$1",
+        [attempt.id],
+      );
+      return attempt;
+    }
+    // Old failed key with no provider session: reconcile, then issue just one new attempt.
+    const staleKey = await invoice();
+    await breakLegacyKey(staleKey);
+    const staleResults = await Promise.all([
+      customer.request(`/invoices/${staleKey}/checkout`, "POST"),
+      customer.request(`/invoices/${staleKey}/checkout`, "POST"),
+    ]);
+    assert(staleResults.every((r) => r.status === 200));
+    assert.equal(staleResults[0].data.url, staleResults[1].data.url);
+    assert.equal(
+      [...sessions.values()].filter((s) => s.metadata.invoiceId === staleKey)
+        .length,
+      1,
+    );
+    // Existing open provider session: recover it without creating a second checkout.
+    const openKey = await invoice();
+    await breakLegacyKey(openKey, true);
+    const openSession = [...sessions.values()].find(
+      (s) => s.metadata.invoiceId === openKey,
+    );
+    const openRecovery = await customer.request(
+      `/invoices/${openKey}/checkout`,
+      "POST",
+    );
+    assert.equal(openRecovery.status, 200);
+    assert.equal(openRecovery.data.url, openSession.url);
+    assert.equal(
+      [...sessions.values()].filter((s) => s.metadata.invoiceId === openKey)
+        .length,
+      1,
+    );
+    // Existing paid provider session: update Paid instead of issuing a new checkout.
+    const paidKey = await invoice();
+    await breakLegacyKey(paidKey, true);
+    const alreadyPaid = [...sessions.values()].find(
+      (s) => s.metadata.invoiceId === paidKey,
+    );
+    alreadyPaid.status = "complete";
+    alreadyPaid.payment_status = "paid";
+    const paidRecovery = await customer.request(
+      `/invoices/${paidKey}/checkout`,
+      "POST",
+    );
+    assert.equal(paidRecovery.status, 200);
+    assert.equal(paidRecovery.data.paid, true);
+    assert.equal(
+      (await customer.request(`/invoices/${paidKey}/payment-status`, "POST"))
+        .data.status,
+      "Paid",
+    );
+    assert.equal(
+      [...sessions.values()].filter((s) => s.metadata.invoiceId === paidKey)
+        .length,
+      1,
+    );
+    // Provider lookup failures leave the old attempt locked; no unverified replacement.
+    const lookupKey = await invoice();
+    const lookupAttempt = await breakLegacyKey(lookupKey);
+    failListing = true;
+    assert.equal(
+      (await customer.request(`/invoices/${lookupKey}/checkout`, "POST"))
+        .status,
+      502,
+    );
+    failListing = false;
+    assert.equal(
+      (
+        await pool.query(
+          "SELECT status FROM legalflow.invoice_payments WHERE id=$1",
+          [lookupAttempt.id],
+        )
+      ).rows[0].status,
+      "creating",
+    );
+    assert.equal(
+      [...sessions.values()].filter((s) => s.metadata.invoiceId === lookupKey)
+        .length,
+      0,
+    );
+    const agedKey = await invoice();
+    const agedAttempt = await breakLegacyKey(agedKey);
+    await pool.query(
+      "UPDATE legalflow.invoice_payments SET created_at=now()-interval '25 hours' WHERE id=$1",
+      [agedAttempt.id],
+    );
+    assert.equal(
+      (await customer.request(`/invoices/${agedKey}/checkout`, "POST")).status,
+      200,
+    );
+    assert.equal(
+      [...sessions.values()].filter((s) => s.metadata.invoiceId === agedKey)
+        .length,
+      1,
+    );
     const zero = await invoice("Sent", 0);
     assert.equal(
       (await customer.request(`/invoices/${zero}/checkout`, "POST")).status,
@@ -377,6 +637,7 @@ test("Stripe checkout authorization, idempotency and signed payment confirmation
   } finally {
     stripe.checkout.sessions.create = originalCreate;
     stripe.checkout.sessions.retrieve = originalRetrieve;
+    stripe.checkout.sessions.list = originalList;
     if (server) await new Promise((r) => server.close(r));
     await pool.end();
     await socket.stop();

@@ -40,6 +40,13 @@ test("HTTP API, PostgreSQL persistence and access isolation", async (t) => {
   try {
     await migrate();
     await migrate();
+    const { readFile } = await import("node:fs/promises");
+    const sqlUpdate = await readFile(
+      new URL("../scripts/sql/permissions-update.sql", import.meta.url),
+      "utf8",
+    );
+    await pool.query(sqlUpdate);
+    await pool.query(sqlUpdate);
     server = createApp().listen(0, "127.0.0.1");
     await new Promise((r) => server.once("listening", r));
     const root = `http://127.0.0.1:${server.address().port}/api`;
@@ -118,7 +125,7 @@ test("HTTP API, PostgreSQL persistence and access isolation", async (t) => {
       ).status,
       403,
     );
-    async function addUser(username, role) {
+    async function addUser(username, role, managerId) {
       const r = await owner.request("/users", {
         method: "POST",
         body: {
@@ -128,14 +135,15 @@ test("HTTP API, PostgreSQL persistence and access isolation", async (t) => {
           password: "Test-password-12345",
           role,
           address: "Customer address",
+          managerId,
         },
       });
       assert.equal(r.status, 201, JSON.stringify(r.data));
       return r.data.id;
     }
     const managerId = await addUser("manager", "manager"),
-      staffId = await addUser("staff", "staff"),
-      strangerId = await addUser("stranger", "staff");
+      staffId = await addUser("staff", "staff", managerId),
+      strangerId = await addUser("stranger", "staff", managerId);
     const customerId = await addUser("customer", "customer");
     const customer = new Client();
     assert.equal((await customer.login("customer")).status, 200);
@@ -571,11 +579,367 @@ test("HTTP API, PostgreSQL persistence and access isolation", async (t) => {
     const newSession = new Client();
     assert.equal((await newSession.login("customer@test.invalid")).status, 200);
     assert.equal((await newSession.request("/workspace")).data.cases.length, 1);
+
+    // New role controls are enforced on the API, not only on buttons.
+    const rules = async (role, patch) => {
+      const value = (
+        await owner.request("/workspace")
+      ).data.rolePermissions.find((r) => r.role === role);
+      return owner.request(`/permissions/${role}`, {
+        method: "PUT",
+        body: { ...value, permissions: { ...value.permissions, ...patch } },
+      });
+    };
+    const rulesValue = (
+      await owner.request("/workspace")
+    ).data.rolePermissions.find((r) => r.role === "staff");
+    assert.equal(
+      (
+        await staff.request("/permissions/staff", {
+          method: "PUT",
+          body: rulesValue,
+        })
+      ).status,
+      403,
+    );
+    assert.equal(
+      (
+        await customer.request("/permissions/staff", {
+          method: "PUT",
+          body: rulesValue,
+        })
+      ).status,
+      403,
+    );
+    const staffCaseId = randomUUID();
+    const staffCase = {
+      ...data,
+      id: staffCaseId,
+      number: "STAFF-CREATED",
+      staffId: strangerId,
+      managerId: "forged-manager",
+    };
+    assert.equal(
+      (
+        await staff.request(`/cases/${staffCaseId}`, {
+          method: "PUT",
+          body: staffCase,
+        })
+      ).status,
+      403,
+    );
+    assert.equal(
+      (
+        await rules("staff", {
+          "cases.create": true,
+          "cases.edit": false,
+          "invoices.create": true,
+          "invoices.edit": false,
+          "invoices.delete": false,
+        })
+      ).status,
+      200,
+    );
+    assert.equal(
+      (
+        await staff.request(`/cases/${staffCaseId}`, {
+          method: "PUT",
+          body: staffCase,
+        })
+      ).status,
+      200,
+    );
+    let owned = (await owner.request("/workspace")).data;
+    let createdCase = owned.cases.find((c) => c.id === staffCaseId);
+    assert.equal(
+      createdCase.staffId,
+      staffId,
+      "Staff cannot forge the responsible staff member",
+    );
+    assert.equal(
+      createdCase.managerId,
+      managerId,
+      "Staff manager is assigned by the server",
+    );
+    assert.equal(
+      (
+        await staff.request(`/cases/${staffCaseId}`, {
+          method: "PUT",
+          body: { ...createdCase, title: "Denied edit" },
+        })
+      ).status,
+      403,
+    );
+    assert.equal(
+      (
+        await owner.request(`/cases/${randomUUID()}`, {
+          method: "PUT",
+          body: { ...data, number: "MISSING-TEAM", staffId: "", managerId: "" },
+        })
+      ).status,
+      422,
+    );
+    assert.equal((await rules("staff", { "cases.edit": true })).status, 200);
+    assert.equal(
+      (
+        await staff.request(`/cases/${staffCaseId}`, {
+          method: "PUT",
+          body: { ...createdCase, title: "Allowed edit" },
+        })
+      ).status,
+      200,
+    );
+    const permissionInvoiceId = randomUUID();
+    assert.equal(
+      (
+        await staff.request(`/invoices/${permissionInvoiceId}`, {
+          method: "PUT",
+          body: { ...invoiceBase, caseId: staffCaseId },
+        })
+      ).status,
+      200,
+    );
+    let staffView = (await staff.request("/workspace")).data;
+    const createdInvoice = staffView.invoices.find(
+      (i) => i.id === permissionInvoiceId,
+    );
+    assert(createdInvoice, "Invoice creator can view invoices");
+    assert.equal(
+      (
+        await staff.request(`/invoices/${permissionInvoiceId}`, {
+          method: "PUT",
+          body: { ...createdInvoice, status: "Overdue" },
+        })
+      ).status,
+      403,
+    );
+    assert.equal(
+      (
+        await staff.request(`/invoices/${permissionInvoiceId}`, {
+          method: "DELETE",
+          body: { updatedAt: createdInvoice.updatedAt },
+        })
+      ).status,
+      403,
+    );
+    assert.equal(
+      (await rules("staff", { "invoices.delete": true })).status,
+      200,
+    );
+    // Active attempts prevent deletion; expired history survives soft deletion.
+    const attemptId = randomUUID();
+    await pool.query(
+      "INSERT INTO legalflow.invoice_payments(id,invoice_id,user_id,amount_cents,currency,status,checkout_parameters) VALUES($1,$2,$3,100,'usd','creating','{}')",
+      [attemptId, permissionInvoiceId, customerId],
+    );
+    assert.equal(
+      (
+        await staff.request(`/invoices/${permissionInvoiceId}`, {
+          method: "DELETE",
+          body: { updatedAt: createdInvoice.updatedAt },
+        })
+      ).status,
+      409,
+    );
+    await pool.query(
+      "UPDATE legalflow.invoice_payments SET status='expired' WHERE id=$1",
+      [attemptId],
+    );
+    assert.equal(
+      (
+        await customer.request(`/invoices/${permissionInvoiceId}`, {
+          method: "DELETE",
+          body: { updatedAt: createdInvoice.updatedAt },
+        })
+      ).status,
+      403,
+    );
+    assert.equal(
+      (
+        await staff.request(`/invoices/${permissionInvoiceId}`, {
+          method: "DELETE",
+          body: { updatedAt: createdInvoice.updatedAt },
+        })
+      ).status,
+      200,
+    );
+    assert(
+      !(await owner.request("/workspace")).data.invoices.some(
+        (i) => i.id === permissionInvoiceId,
+      ),
+    );
+    assert(
+      !(await customer.request("/workspace")).data.invoices.some(
+        (i) => i.id === permissionInvoiceId,
+      ),
+    );
+    assert.equal(
+      (
+        await pool.query(
+          "SELECT 1 FROM legalflow.invoice_payments WHERE id=$1",
+          [attemptId],
+        )
+      ).rowCount,
+      1,
+    );
+    assert.equal(
+      (
+        await owner.request(`/invoices/${permissionInvoiceId}`, {
+          method: "PUT",
+          body: createdInvoice,
+        })
+      ).status,
+      409,
+      "Deleted invoices cannot be resurrected",
+    );
+    owned = (await owner.request("/workspace")).data;
+    const paidInvoice = owned.invoices.find((i) => i.id === inv2);
+    assert.equal(
+      (
+        await owner.request(`/invoices/${inv2}`, {
+          method: "DELETE",
+          body: { updatedAt: paidInvoice.updatedAt },
+        })
+      ).status,
+      409,
+    );
+    assert.equal(
+      (
+        await owner.request(`/invoices/${inv2}`, {
+          method: "PUT",
+          body: { ...paidInvoice, status: "Sent" },
+        })
+      ).status,
+      409,
+      "Paid invoices cannot be reverted to bypass deletion protection",
+    );
+    // Individual deny takes precedence over role allow.
+    let staffUser = owned.users.find((u) => u.id === staffId);
+    assert.equal(
+      (
+        await owner.request(`/users/${staffId}/access`, {
+          method: "PATCH",
+          body: {
+            role: "staff",
+            status: "Active",
+            managerId,
+            permissions: { "cases.create": false },
+            updatedAt: staffUser.updatedAt,
+          },
+        })
+      ).status,
+      200,
+    );
+    await staff.login("staff");
+    assert.equal(
+      (
+        await staff.request(`/cases/${randomUUID()}`, {
+          method: "PUT",
+          body: { ...staffCase, number: "INDIVIDUAL-DENY" },
+        })
+      ).status,
+      403,
+    );
+    assert.equal((await rules("staff", { "cases.create": false })).status, 200);
+    owned = (await owner.request("/workspace")).data;
+    staffUser = owned.users.find((u) => u.id === staffId);
+    assert.equal(
+      (
+        await owner.request(`/users/${staffId}/access`, {
+          method: "PATCH",
+          body: {
+            role: "staff",
+            status: "Active",
+            managerId,
+            permissions: { "cases.create": true },
+            updatedAt: staffUser.updatedAt,
+          },
+        })
+      ).status,
+      200,
+    );
+    await staff.login("staff");
+    assert.equal(
+      (
+        await staff.request(`/cases/${randomUUID()}`, {
+          method: "PUT",
+          body: { ...staffCase, number: "INDIVIDUAL-ALLOW" },
+        })
+      ).status,
+      200,
+    );
+    // Moving a staff member updates all their cases and manager visibility.
+    const manager2 = await addUser("manager2", "manager");
+    owned = (await owner.request("/workspace")).data;
+    staffUser = owned.users.find((u) => u.id === staffId);
+    assert.equal(
+      (
+        await owner.request(`/users/${staffId}/access`, {
+          method: "PATCH",
+          body: {
+            role: "staff",
+            status: "Active",
+            managerId: manager2,
+            updatedAt: staffUser.updatedAt,
+          },
+        })
+      ).status,
+      200,
+    );
+    owned = (await owner.request("/workspace")).data;
+    assert(
+      owned.cases
+        .filter((c) => c.staffId === staffId)
+        .every((c) => c.managerId === manager2),
+    );
+    const secondManager = new Client();
+    await secondManager.login("manager2");
+    assert(
+      (await secondManager.request("/workspace")).data.cases.some(
+        (c) => c.id === caseId,
+      ),
+    );
+    const managerUser = owned.users.find((u) => u.id === manager2);
+    assert.equal(
+      (
+        await owner.request(`/users/${manager2}/access`, {
+          method: "PATCH",
+          body: {
+            role: "manager",
+            status: "Inactive",
+            updatedAt: managerUser.updatedAt,
+          },
+        })
+      ).status,
+      409,
+      "Cannot deactivate a manager who still has staff or cases",
+    );
+    assert.equal(
+      (
+        await owner.request(`/users/${staffId}/access`, {
+          method: "PATCH",
+          body: {
+            role: "staff",
+            status: "Active",
+            managerId,
+            updatedAt: staffUser.updatedAt,
+          },
+        })
+      ).status,
+      409,
+      "Stale team changes are rejected",
+    );
     assert.equal(
       (
         await owner.request(`/users/${customerId}/access`, {
           method: "PATCH",
-          body: { role: "customer", status: "Inactive" },
+          body: {
+            role: "customer",
+            status: "Inactive",
+            updatedAt: (await owner.request("/workspace")).data.users.find(
+              (u) => u.id === customerId,
+            ).updatedAt,
+          },
         })
       ).status,
       200,

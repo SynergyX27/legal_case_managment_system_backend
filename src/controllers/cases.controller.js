@@ -1,3 +1,5 @@
+import { permit } from "../services/access.service.js";
+import { findUser } from "../models/user.model.js";
 import { randomUUID } from "node:crypto";
 import { transaction } from "../config/database.js";
 import { assert } from "../utils/errors.js";
@@ -7,18 +9,21 @@ import * as schema from "../validators/schemas.js";
 export async function putCase(req, res) {
   const v = schema.caseInput.parse({ ...req.body, id: req.params.id });
   await transaction(async (db) => {
+    await db.query(
+      "SELECT pg_advisory_xact_lock(hashtext('legalflow-user-access'))",
+    );
+    req.user = await findUser(req.user.id, db);
     const old = (
       await db.query("SELECT * FROM legalflow.cases WHERE id=$1 FOR UPDATE", [
         v.id,
       ])
     ).rows[0];
+    permit(req.user, old ? "cases.edit" : "cases.create");
     if (old) await accessibleCase(req.user, v.id, db, { write: true });
-    else
-      assert(
-        ["owner", "manager"].includes(req.user.role),
-        403,
-        "Only owners and managers can create cases",
-      );
+    if (!old && req.user.role === "staff") {
+      v.staffId = req.user.id;
+      v.managerId = req.user.manager_id || "";
+    }
     if (old) {
       assert(
         typeof req.body.updatedAt === "string" &&
@@ -42,7 +47,8 @@ export async function putCase(req, res) {
     if (old && req.user.role === "staff")
       assert(
         old.client_id === v.clientId &&
-          old.manager_id === (v.managerId || null),
+          old.manager_id === (v.managerId || null) &&
+          old.staff_id === v.staffId,
         403,
         "Staff cannot change case customer or manager",
       );
@@ -84,11 +90,7 @@ export async function putCase(req, res) {
   res.json({ ok: true, id: v.id });
 }
 export async function deleteCase(req, res) {
-  assert(
-    ["owner", "manager"].includes(req.user.role),
-    403,
-    "Only owners or managers can delete cases",
-  );
+  permit(req.user, "cases.delete");
   await transaction(async (db) => {
     await accessibleCase(req.user, req.params.id, db, {
       write: true,

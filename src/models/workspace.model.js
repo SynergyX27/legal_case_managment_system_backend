@@ -1,6 +1,6 @@
 import { pool } from "../config/database.js";
 import { publicUser } from "./user.model.js";
-import { caseScope, canMessage } from "../services/access.service.js";
+import { caseScope, canMessage, can } from "../services/access.service.js";
 export async function workspace(u) {
   const scope = caseScope(u);
   const rawCases = (
@@ -11,7 +11,9 @@ export async function workspace(u) {
   ).rows;
   const ids = rawCases.map((c) => c.id);
   const users = (
-    await pool.query("SELECT * FROM legalflow.users ORDER BY name")
+    await pool.query(
+      "SELECT u.*,r.permissions AS role_permissions FROM legalflow.users u LEFT JOIN legalflow.role_permissions r ON r.role=u.role ORDER BY u.name",
+    )
   ).rows;
   const related = users.filter(
     (p) => p.id === u.id || u.role === "owner" || canMessage(u, p, rawCases),
@@ -24,6 +26,7 @@ export async function workspace(u) {
           id: v.id,
           name: v.name,
           role: v.role,
+          managerId: v.managerId,
           status: v.status,
           clientId: v.clientId,
           accountId: "company",
@@ -47,11 +50,11 @@ export async function workspace(u) {
     memberRows,
   ] = await Promise.all([
     pool.query(
-      u.role === "owner"
+      u.role === "owner" || can(u, "cases.create")
         ? "SELECT data FROM legalflow.clients ORDER BY created_at DESC"
         : "SELECT data FROM legalflow.clients WHERE id=ANY($1::text[])",
       [
-        ...(u.role === "owner"
+        ...(u.role === "owner" || can(u, "cases.create")
           ? []
           : [
               [
@@ -64,9 +67,13 @@ export async function workspace(u) {
             ]),
       ],
     ),
-    ["owner", "manager", "customer"].includes(u.role)
+    u.role === "customer" ||
+    can(u, "invoices.view") ||
+    can(u, "invoices.create") ||
+    can(u, "invoices.edit") ||
+    can(u, "invoices.delete")
       ? pool.query(
-          "SELECT data||jsonb_build_object('id',id,'number',number,'caseId',case_id,'clientId',client_id,'updatedAt',updated_at) AS data FROM legalflow.invoices WHERE case_id=ANY($1::text[]) AND ($2::boolean OR data->>'status'<>'Draft') ORDER BY created_at DESC",
+          "SELECT data||jsonb_build_object('id',id,'number',number,'caseId',case_id,'clientId',client_id,'updatedAt',updated_at) AS data FROM legalflow.invoices WHERE deleted_at IS NULL AND case_id=ANY($1::text[]) AND ($2::boolean OR data->>'status'<>'Draft') ORDER BY created_at DESC",
           [ids, u.role !== "customer"],
         )
       : Promise.resolve({ rows: [] }),
@@ -138,6 +145,18 @@ export async function workspace(u) {
   }
   const attachments = docs.rows.map(documentView);
   return {
+    rolePermissions:
+      u.role === "owner"
+        ? (
+            await pool.query(
+              "SELECT role,permissions,updated_at FROM legalflow.role_permissions ORDER BY role",
+            )
+          ).rows.map((r) => ({
+            role: r.role,
+            permissions: r.permissions,
+            updatedAt: r.updated_at.toISOString(),
+          }))
+        : [],
     accounts: [{ id: "company", name: "LegalFlow" }],
     users: userViews,
     clients: clients.rows.map((c) => c.data),

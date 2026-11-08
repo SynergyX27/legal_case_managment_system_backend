@@ -1,5 +1,6 @@
 export * from "./workspace.controller.js";
 export * from "./users.controller.js";
+export * from "./permissions.controller.js";
 export * from "./cases.controller.js";
 export * from "./clients.controller.js";
 export * from "./invoices.controller.js";

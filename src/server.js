@@ -3,6 +3,8 @@ import { pool } from "./config/database.js";
 import { env } from "./config/env.js";
 await pool.query("SELECT 1 FROM legalflow.migrations LIMIT 1");
 await pool.query("SELECT 1 FROM legalflow.invoice_payments LIMIT 1");
+await pool.query("SELECT manager_id,permissions FROM legalflow.users LIMIT 1");
+await pool.query("SELECT deleted_at FROM legalflow.invoices LIMIT 1");
 const server = createApp().listen(env.PORT, "0.0.0.0", () =>
   console.log(`LegalFlow API listening on port ${env.PORT}`),
 );

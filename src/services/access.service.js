@@ -2,11 +2,39 @@ import { assert } from "../utils/errors.js";
 export const internal = (u) => u && u.role !== "customer";
 export const owner = (u) =>
   assert(u?.role === "owner", 403, "Only the owner can manage this resource");
+export const permissionKeys = [
+  "cases.create",
+  "cases.edit",
+  "cases.delete",
+  "invoices.view",
+  "invoices.create",
+  "invoices.edit",
+  "invoices.delete",
+];
+export function effectivePermissions(u) {
+  if (u?.role === "owner")
+    return Object.fromEntries(permissionKeys.map((k) => [k, true]));
+  if (!["manager", "staff"].includes(u?.role)) return {};
+  return Object.fromEntries(
+    permissionKeys.map((k) => [
+      k,
+      (u.permissions?.[k] ?? u.role_permissions?.[k]) === true,
+    ]),
+  );
+}
+export const can = (u, key) =>
+  u?.status === "Active" && effectivePermissions(u)[key] === true;
+export const permit = (u, key) =>
+  assert(
+    can(u, key),
+    403,
+    "Your account does not have permission to " + key.replace(".", " "),
+  );
 export const biller = (u) =>
   assert(
-    ["owner", "manager"].includes(u?.role),
+    ["invoices.create", "invoices.edit"].some((k) => can(u, k)),
     403,
-    "Billing requires owner or manager access",
+    "Invoice permission required",
   );
 export const visible = (u, c) =>
   u?.status === "Active" &&

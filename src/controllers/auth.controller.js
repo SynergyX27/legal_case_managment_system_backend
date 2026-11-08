@@ -16,6 +16,22 @@ export async function createUserRecord(input, actor = null) {
   );
   const hash = await hashPassword(data.password);
   return transaction(async (db) => {
+    await db.query(
+      "SELECT pg_advisory_xact_lock(hashtext('legalflow-user-access'))",
+    );
+    if (data.role === "staff") {
+      assert(data.managerId, 422, "Assign this staff member to a manager");
+      assert(
+        (
+          await db.query(
+            "SELECT 1 FROM legalflow.users WHERE id=$1 AND role='manager' AND status='Active'",
+            [data.managerId],
+          )
+        ).rowCount,
+        422,
+        "Select an active manager",
+      );
+    }
     if (data.role === "owner" && !actor?.id) {
       await db.query(
         "SELECT pg_advisory_xact_lock(hashtext('legalflow-first-owner'))",
@@ -71,7 +87,7 @@ export async function createUserRecord(input, actor = null) {
         ]);
     }
     await db.query(
-      "INSERT INTO legalflow.users(id,name,email,username,password_hash,role,client_id,phone,title) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)",
+      "INSERT INTO legalflow.users(id,name,email,username,password_hash,role,client_id,phone,title,manager_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
       [
         id,
         data.name,
@@ -82,6 +98,7 @@ export async function createUserRecord(input, actor = null) {
         clientId,
         data.phone,
         data.title,
+        data.role === "staff" ? data.managerId : null,
       ],
     );
     await audit(db, actor, "user.created", id);

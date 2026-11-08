@@ -12,6 +12,21 @@ export const password = z
   .string()
   .min(10, "Use at least 10 characters")
   .max(128);
+export const permissionsInput = z
+  .object(
+    Object.fromEntries(
+      [
+        "cases.create",
+        "cases.edit",
+        "cases.delete",
+        "invoices.view",
+        "invoices.create",
+        "invoices.edit",
+        "invoices.delete",
+      ].map((k) => [k, z.boolean().optional()]),
+    ),
+  )
+  .strict();
 export const userInput = z.object({
   name: short.min(2),
   email: z
@@ -33,11 +48,15 @@ export const userInput = z.object({
   title: optional,
   clientId: optional,
   role: role.default("customer"),
+  managerId: optional,
 });
 export const accessInput = z.object({
   role,
   status: z.enum(["Active", "Inactive"]),
   password: password.optional(),
+  managerId: optional.optional(),
+  permissions: permissionsInput.optional(),
+  updatedAt: z.string().optional(),
 });
 export const clientInput = z.object({
   id,
