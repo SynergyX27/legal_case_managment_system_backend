@@ -84,7 +84,6 @@ async function reservePayment(user, invoiceId) {
       amount = invoiceAmountCents(invoice.data);
     const parameters = {
       mode: "payment",
-      payment_method_types: ["card"],
       client_reference_id: invoice.id,
       customer_email: user.email,
       line_items: [
@@ -229,7 +228,10 @@ export async function applyStripeSession(session, event = null) {
         `${invoice.number} paid online`,
         "/invoices",
       );
-    } else if (session.status === "expired") {
+    } else if (
+      session.status === "expired" ||
+      event?.type === "checkout.session.async_payment_failed"
+    ) {
       await db.query(
         "UPDATE legalflow.invoice_payments SET status='expired',stripe_session_id=$2,updated_at=now() WHERE id=$1 AND status<>'paid'",
         [payment.id, session.id],
@@ -251,6 +253,17 @@ export async function createCheckout(user, invoiceId) {
   let payment = await reservePayment(user, invoiceId);
   try {
     if (payment.status === "creating" && !payment.stripe_session_id) {
+      // Older rejected attempts persisted the removed API parameter. Remove it
+      // before retrying, retaining the original amount and idempotency key.
+      // If Stripe already cached a different request, it rejects the changed
+      // payload rather than creating an additional session.
+      if (Object.hasOwn(payment.checkout_parameters, "payment_method_types")) {
+        const cleaned = await pool.query(
+          "UPDATE legalflow.invoice_payments SET checkout_parameters=checkout_parameters-'payment_method_types',updated_at=now() WHERE id=$1 AND status='creating' AND stripe_session_id IS NULL RETURNING *",
+          [payment.id],
+        );
+        if (cleaned.rowCount) payment = cleaned.rows[0];
+      }
       // Never retry an unknown session beyond Stripe's idempotency retention window.
       assert(
         Date.now() - new Date(payment.created_at).getTime() < 23 * 3600000,
@@ -360,9 +373,16 @@ export async function processStripeEvent(event) {
     ![
       "checkout.session.completed",
       "checkout.session.async_payment_succeeded",
+      "checkout.session.async_payment_failed",
       "checkout.session.expired",
     ].includes(event.type)
   )
     return;
-  await applyStripeSession(event.data.object, event);
+  // A delayed failure event may arrive out of order. Check the current Stripe
+  // session before releasing its attempt for another payment.
+  const session =
+    event.type === "checkout.session.async_payment_failed"
+      ? await stripeClient().checkout.sessions.retrieve(event.data.object.id)
+      : event.data.object;
+  await applyStripeSession(session, event);
 }
