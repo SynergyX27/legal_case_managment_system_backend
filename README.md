@@ -28,3 +28,7 @@ Uploaded files are limited by `MAX_FILE_MB` (25 MB by default, at most 100 MB). 
 Upload and delete reservations remain durable across a process interruption. Run `node scripts/reconcile-documents.js` periodically to retry interrupted deletions and remove incomplete uploads older than one hour. Normal uploads use unique, stable IDs to avoid duplicates on retry.
 
 Health endpoints: `GET /api/health/live`, `GET /api/health/ready`. The latter checks database availability and migration metadata. The owner can check/reconnect Dropbox in Settings.
+
+## Stripe payments
+
+See `../STRIPE_SETUP.md`. Apply migration 002, set backend-only STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET, and register the public backend endpoint `/api/payments/stripe/webhook`. Checkout is hosted by Stripe; no publishable key is needed on the frontend. The raw-body webhook route precedes JSON/CSRF middleware and requires a valid Stripe signature. Customer checkout and verification routes require the existing session, CSRF and invoice permissions.

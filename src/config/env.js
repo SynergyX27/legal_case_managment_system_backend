@@ -10,6 +10,12 @@ const schema = z.object({
   SESSION_SECRET: z.string().min(32),
   APP_ORIGIN: z.string().url(),
   APP_ENCRYPTION_KEY: z.string().regex(/^[a-fA-F0-9]{64}$/),
+  STRIPE_SECRET_KEY: z
+    .union([z.literal(""), z.string().regex(/^sk_(test|live)_/)])
+    .default(""),
+  STRIPE_WEBHOOK_SECRET: z
+    .union([z.literal(""), z.string().startsWith("whsec_")])
+    .default(""),
   DROPBOX_APP_KEY: z.string().default(""),
   DROPBOX_APP_SECRET: z.string().default(""),
   DROPBOX_REFRESH_TOKEN: z.string().default(""),

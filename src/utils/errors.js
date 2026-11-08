@@ -12,7 +12,9 @@ export function errorHandler(err, req, res, next) {
   const requestId = req.id;
   let status = err.status || 500;
   let message =
-    status < 500 ? err.message : "The server could not complete this request";
+    err instanceof HttpError || status < 500
+      ? err.message
+      : "The server could not complete this request";
   if (err.name === "ZodError") {
     status = 422;
     message = err.issues

@@ -34,6 +34,22 @@ export async function putInvoice(req, res) {
         "An invoice cannot be moved to another case",
       );
     }
+    if (old) {
+      assert(
+        old.data.paymentMethod !== "stripe",
+        409,
+        "An invoice paid through Stripe cannot be edited",
+      );
+      const active = await db.query(
+        "SELECT 1 FROM legalflow.invoice_payments WHERE invoice_id=$1 AND status IN ('creating','open','processing')",
+        [v.id],
+      );
+      assert(
+        !active.rowCount,
+        409,
+        "This invoice has an active online checkout. Wait for payment confirmation or checkout expiry before editing or recording a manual payment",
+      );
+    }
     const number =
       old?.number ||
       `INV-${String((await db.query("SELECT nextval('legalflow.invoice_numbers') AS n")).rows[0].n).padStart(6, "0")}`;

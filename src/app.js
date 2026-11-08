@@ -9,6 +9,7 @@ import { existsSync } from "node:fs";
 import { env } from "./config/env.js";
 import { pool } from "./config/database.js";
 import { api } from "./routes/api.routes.js";
+import { webhook as stripeWebhook } from "./controllers/payments.controller.js";
 import { errorHandler } from "./utils/errors.js";
 export function createApp() {
   const app = express();
@@ -41,6 +42,7 @@ export function createApp() {
   app.get("/api/health/live", (req, res) => res.json({ ok: true }));
   app.get("/api/health/ready", async (req, res) => {
     await pool.query("SELECT 1 FROM legalflow.migrations LIMIT 1");
+    await pool.query("SELECT 1 FROM legalflow.invoice_payments LIMIT 1");
     res.json({ ok: true });
   });
   app.use(
@@ -52,6 +54,12 @@ export function createApp() {
       legacyHeaders: false,
       message: { error: "Too many requests. Please wait a minute" },
     }),
+  );
+  // Stripe signs the exact bytes. This route must precede JSON parsing and browser CSRF/session middleware.
+  app.post(
+    "/api/payments/stripe/webhook",
+    express.raw({ type: "application/json", limit: "1mb" }),
+    stripeWebhook,
   );
   app.use("/api", express.json({ limit: "1mb" }));
   const Store = PgStore(session);

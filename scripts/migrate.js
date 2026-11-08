@@ -1,3 +1,5 @@
+import { fileURLToPath } from "node:url";
+import path from "node:path";
 import { readdir, readFile } from "node:fs/promises";
 import { pool, transaction } from "../src/config/database.js";
 export async function migrate() {
@@ -35,7 +37,10 @@ export async function migrate() {
     }
   });
 }
-if (process.argv[1] === new URL(import.meta.url).pathname) {
+if (
+  process.argv[1] &&
+  path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+) {
   try {
     await migrate();
   } finally {

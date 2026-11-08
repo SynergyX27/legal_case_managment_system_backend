@@ -1,6 +1,7 @@
 import { Router } from "express";
 import multer from "multer";
 import { rateLimit } from "express-rate-limit";
+import * as payments from "../controllers/payments.controller.js";
 import * as auth from "../controllers/auth.controller.js";
 import * as c from "../controllers/resources.controller.js";
 import * as d from "../controllers/documents.controller.js";
@@ -26,6 +27,9 @@ api.use(requireAuth);
 api.post("/auth/logout", auth.logout);
 api.patch("/auth/profile", auth.profile);
 api.get("/workspace", c.getWorkspace);
+api.get("/payments/config", payments.configuration);
+api.post("/invoices/:id/checkout", payments.checkout);
+api.post("/invoices/:id/payment-status", payments.status);
 api.post("/users", c.createUser);
 api.patch("/users/:id/access", c.updateUser);
 api.put("/cases/:id", c.putCase);
