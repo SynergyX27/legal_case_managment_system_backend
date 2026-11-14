@@ -117,6 +117,10 @@ export async function updateUser(req, res) {
       await audit(db, req.user, "staff.manager-assigned", id);
     }
     if (hash || old.role !== v.role || old.status !== v.status)
+      await db.query("DELETE FROM legalflow.mobile_sessions WHERE user_id=$1", [
+        id,
+      ]);
+    if (hash || old.role !== v.role || old.status !== v.status)
       await db.query(
         "DELETE FROM legalflow.sessions WHERE sess->>'userId'=$1",
         [id],

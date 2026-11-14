@@ -24,6 +24,10 @@ const schema = z.object({
   MAIL_FROM: z.union([z.literal(""), z.string().email()]).default(""),
   MAIL_FROM_NAME: z.string().trim().max(100).default("LegalFlow"),
   EMAIL_POLL_SECONDS: z.coerce.number().int().min(2).max(300).default(10),
+  MOBILE_APP_SCHEME: z
+    .string()
+    .regex(/^[a-z][a-z0-9+.-]*$/)
+    .default("legalflow"),
   NODE_ENV: z
     .enum(["development", "test", "production"])
     .default("development"),

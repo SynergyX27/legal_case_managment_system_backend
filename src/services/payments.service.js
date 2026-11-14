@@ -111,8 +111,8 @@ async function reservePayment(user, invoiceId) {
       payment_intent_data: {
         metadata: { invoiceId: invoice.id, paymentId: id },
       },
-      success_url: `${env.APP_ORIGIN}/invoices?payment=success&invoiceId=${encodeURIComponent(invoice.id)}`,
-      cancel_url: `${env.APP_ORIGIN}/invoices?payment=cancelled&invoiceId=${encodeURIComponent(invoice.id)}`,
+      success_url: `${env.APP_ORIGIN}${user.mobileReturn ? "/api/mobile/payments/return" : "/invoices"}?payment=success&invoiceId=${encodeURIComponent(invoice.id)}`,
+      cancel_url: `${env.APP_ORIGIN}${user.mobileReturn ? "/api/mobile/payments/return" : "/invoices"}?payment=cancelled&invoiceId=${encodeURIComponent(invoice.id)}`,
       // Buffer above Stripe's 30-minute minimum for database/API latency and retries.
       expires_at: Math.floor(Date.now() / 1000) + 45 * 60,
     };

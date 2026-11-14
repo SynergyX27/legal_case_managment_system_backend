@@ -6,6 +6,7 @@ import { env } from "../config/env.js";
 export const csrfToken = (req) =>
   req.session.csrf || (req.session.csrf = randomBytes(32).toString("hex"));
 export function csrf(req, res, next) {
+  if (req.nativeSession) return next();
   if (["GET", "HEAD", "OPTIONS"].includes(req.method)) return next();
   const origin = req.headers.origin;
   assert(
@@ -23,7 +24,9 @@ export function csrf(req, res, next) {
   next();
 }
 export async function requireAuth(req, res, next) {
-  const user = await findUser(req.session.userId || "");
+  const user = req.nativeSession
+    ? req.user
+    : await findUser(req.session.userId || "");
   assert(user?.status === "Active", 401, "Please sign in");
   req.user = user;
   req.publicUser = publicUser(user);

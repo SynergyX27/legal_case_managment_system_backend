@@ -25,8 +25,9 @@ test("Stripe checkout authorization, idempotency and signed payment confirmation
   const { pool } = await import("../src/config/database.js");
   const { migrate } = await import("../scripts/migrate.js");
   const { createApp } = await import("../src/app.js");
-  const { createUserRecord } =
-    await import("../src/controllers/auth.controller.js");
+  const { createUserRecord } = await import(
+    "../src/controllers/auth.controller.js"
+  );
   const { stripeClient } = await import("../src/services/payments.service.js");
   let server;
   const stripe = stripeClient(),
@@ -657,6 +658,38 @@ test("Stripe checkout authorization, idempotency and signed payment confirmation
     assert.equal(
       (await customer.request(`/invoices/${zero}/checkout`, "POST")).status,
       422,
+    );
+    const nativeLogin = await fetch(root + "/mobile/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        identity: "customer",
+        password: "Payment-test-password-123",
+      }),
+    });
+    assert.equal(nativeLogin.status, 200);
+    const nativeToken = (await nativeLogin.json()).token;
+    const nativeInvoice = await invoice();
+    const nativeCheckout = await fetch(
+      root + `/invoices/${nativeInvoice}/checkout`,
+      { method: "POST", headers: { Authorization: `Bearer ${nativeToken}` } },
+    );
+    assert.equal(nativeCheckout.status, 200);
+    const nativeParameters = (
+      await pool.query(
+        "SELECT checkout_parameters FROM legalflow.invoice_payments WHERE invoice_id=$1",
+        [nativeInvoice],
+      )
+    ).rows[0].checkout_parameters;
+    assert(
+      nativeParameters.success_url.includes(
+        "/api/mobile/payments/return?payment=success",
+      ),
+    );
+    assert(
+      nativeParameters.cancel_url.includes(
+        "/api/mobile/payments/return?payment=cancelled",
+      ),
     );
     console.log(
       "Verified server totals, customer ownership, signed webhooks, duplicate delivery, checkout reuse, unpaid/expired handling and confirmation recovery",

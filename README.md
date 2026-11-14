@@ -40,3 +40,7 @@ Apply migration 003 before starting this version. See `../PERMISSIONS_UPDATE.md`
 ## Automated emails
 
 Apply migration 004 before starting this version. See `../EMAIL_SETUP.md`. Cases and issued invoices queue client notifications; Stripe-confirmed and manually recorded payments queue client, owner, manager and staff receipts. The server runs a durable PostgreSQL outbox worker. SMTP credentials come only from backend `.env`, private `.env.smtp` or process environment. Owners can inspect/retry delivery in Settings. Render free services block SMTP port 465, so this connection needs a paid backend instance.
+
+## Native app update
+
+See `../START_HERE.md`. Apply migration 005 before deploying. The API supports securely hashed per-device native sessions without changing the browser CSRF policy. Existing clients continue to use the same web API. Native authorization and payment returns use the existing public frontend /api proxy and legalflow:// scheme. No mobile SMTP/Dropbox/Stripe secrets are distributed.

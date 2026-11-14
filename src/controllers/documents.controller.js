@@ -27,6 +27,8 @@ const allowed = new Set([
   "image/gif",
   "image/webp",
   "image/avif",
+  "image/heic",
+  "image/heif",
   "video/mp4",
   "video/quicktime",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",

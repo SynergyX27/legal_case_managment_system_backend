@@ -186,8 +186,13 @@ export async function profile(req, res) {
       );
     if (hash)
       await db.query(
+        "DELETE FROM legalflow.mobile_sessions WHERE user_id=$1 AND id<>$2",
+        [req.user.id, req.nativeSession?.id || ""],
+      );
+    if (hash)
+      await db.query(
         "DELETE FROM legalflow.sessions WHERE sess->>'userId'=$1 AND sid<>$2",
-        [req.user.id, req.sessionID],
+        [req.user.id, req.sessionID || ""],
       );
     await audit(db, req.user, "profile.updated", req.user.id);
   });

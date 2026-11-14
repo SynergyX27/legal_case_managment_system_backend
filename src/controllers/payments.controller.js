@@ -10,7 +10,12 @@ import {
 } from "../services/payments.service.js";
 export const configuration = (req, res) => res.json(paymentConfiguration());
 export const checkout = async (req, res) =>
-  res.json(await createCheckout(req.user, id.parse(req.params.id)));
+  res.json(
+    await createCheckout(
+      { ...req.user, mobileReturn: !!req.nativeSession },
+      id.parse(req.params.id),
+    ),
+  );
 export const status = async (req, res) =>
   res.json(await paymentStatus(req.user, id.parse(req.params.id)));
 export async function webhook(req, res) {

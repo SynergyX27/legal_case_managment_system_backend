@@ -18,7 +18,7 @@ test("pgAdmin payment update preserves the original schema and is repeatable", a
       "INSERT INTO legalflow.migrations(name) VALUES('001_initial.sql');",
     );
     const update = await readFile(
-      new URL("../../Stripe_Payment_Database_Update.sql", import.meta.url),
+      new URL("../scripts/sql/stripe-update.sql", import.meta.url),
       "utf8",
     );
     await db.exec(update);

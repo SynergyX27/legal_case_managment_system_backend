@@ -1,3 +1,5 @@
+import { nativeIdentity } from "../services/mobile-auth.service.js";
+import * as mobile from "../controllers/mobile.controller.js";
 import * as mail from "../controllers/email.controller.js";
 import { Router } from "express";
 import multer from "multer";
@@ -13,6 +15,23 @@ api.use((req, res, next) => {
   res.setHeader("Cache-Control", "no-store");
   next();
 });
+const mobileAuthLimit = rateLimit({
+  windowMs: 15 * 60000,
+  limit: 40,
+  standardHeaders: "draft-8",
+  legacyHeaders: false,
+  message: { error: "Too many sign-in attempts" },
+});
+api.post("/mobile/auth/login", mobileAuthLimit, authThrottle(), mobile.login);
+api.post(
+  "/mobile/auth/register",
+  mobileAuthLimit,
+  authThrottle(10),
+  mobile.register,
+);
+api.get("/mobile/payments/return", mobile.paymentReturn);
+api.get("/integrations/dropbox/callback", mobile.dropboxCallback);
+api.use(nativeIdentity);
 api.get("/auth/session", auth.session);
 api.use(csrf);
 const ipAuth = rateLimit({
@@ -25,6 +44,9 @@ const ipAuth = rateLimit({
 api.post("/auth/login", ipAuth, authThrottle(), auth.login);
 api.post("/auth/register", ipAuth, authThrottle(10), auth.register);
 api.use(requireAuth);
+api.get("/mobile/auth/me", (req, res) => res.json({ user: req.publicUser }));
+api.post("/mobile/auth/logout", mobile.logout);
+api.post("/mobile/integrations/dropbox/connect", mobile.dropboxConnect);
 api.post("/auth/logout", auth.logout);
 api.patch("/auth/profile", auth.profile);
 api.get("/workspace", c.getWorkspace);
