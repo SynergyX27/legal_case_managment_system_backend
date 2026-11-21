@@ -67,6 +67,7 @@ export function createApp() {
     express.raw({ type: "application/json", limit: "1mb" }),
     stripeWebhook,
   );
+  app.use("/api/cases/import/commit", express.json({ limit: "10mb" }));
   app.use("/api", express.json({ limit: "1mb" }));
   const Store = PgStore(session);
   app.use(

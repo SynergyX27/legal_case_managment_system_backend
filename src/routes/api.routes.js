@@ -1,3 +1,5 @@
+import * as caseImport from "../controllers/case-import.controller.js";
+import * as caseReports from "../controllers/case-reports.controller.js";
 import { nativeIdentity } from "../services/mobile-auth.service.js";
 import * as mobile from "../controllers/mobile.controller.js";
 import * as mail from "../controllers/email.controller.js";
@@ -66,6 +68,34 @@ api.post("/invoices/:id/payment-status", payments.status);
 api.post("/users", c.createUser);
 api.put("/permissions/:role", c.updatePermissions);
 api.patch("/users/:id/access", c.updateUser);
+const importUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 10 * 1024 * 1024,
+    files: 1,
+    fields: 1,
+    fieldSize: 100000,
+  },
+});
+const importLimit = rateLimit({
+  windowMs: 60000,
+  limit: 10,
+  standardHeaders: "draft-8",
+  legacyHeaders: false,
+});
+api.post(
+  "/cases/import/preview",
+  importLimit,
+  importUpload.single("file"),
+  caseImport.preview,
+);
+api.post("/cases/import/commit", importLimit, caseImport.commit);
+api.post(
+  "/reports/cases/email",
+  rateLimit({ windowMs: 60000, limit: 5 }),
+  caseReports.email,
+);
+api.patch("/cases/bulk", importLimit, caseImport.bulkUpdate);
 api.put("/cases/:id", c.putCase);
 api.delete("/cases/:id", c.deleteCase);
 api.post("/cases/:id/comments", c.comment);

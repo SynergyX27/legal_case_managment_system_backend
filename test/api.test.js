@@ -994,6 +994,270 @@ test("HTTP API, PostgreSQL persistence and access isolation", async (t) => {
     );
     assert.equal((await customer.request("/workspace")).status, 401);
     assert.equal((await newSession.request("/workspace")).status, 401);
+    {
+      // Client-requested import uses the current team and commits all rows atomically.
+      const importCustomer = await addUser("importcustomer", "customer");
+      const importClientId = (
+        await owner.request("/workspace")
+      ).data.users.find((u) => u.id === importCustomer).clientId;
+      const form = new FormData();
+      form.append(
+        "file",
+        new Blob([
+          "Case Number,Tenant,Money Owed,Apartment Community\r\nIMPORT-001,Tenant A,1250.50,Southland Hills\r\nIMPORT-002,Tenant B,500,Southland Hills",
+        ]),
+        "cases.csv",
+      );
+      form.append(
+        "defaults",
+        JSON.stringify({ clientId: importClientId, staffId }),
+      );
+      const preview = await owner.request("/cases/import/preview", {
+        method: "POST",
+        body: form,
+      });
+      assert.equal(preview.status, 200, JSON.stringify(preview.data));
+      assert.equal(preview.data.valid, 2);
+      const batch = {
+        batchId: "test-import-batch",
+        cases: preview.data.results.map((r) => r.case),
+      };
+      assert.equal(
+        (
+          await owner.request("/cases/import/commit", {
+            method: "POST",
+            body: batch,
+          })
+        ).status,
+        200,
+      );
+      assert.equal(
+        (
+          await owner.request("/cases/import/commit", {
+            method: "POST",
+            body: batch,
+          })
+        ).status,
+        200,
+        "Retry reuses the committed import",
+      );
+      assert.equal(
+        (
+          await pool.query(
+            "SELECT count(*)::int AS n FROM legalflow.cases WHERE number LIKE 'IMPORT-%'",
+          )
+        ).rows[0].n,
+        2,
+      );
+      const failingBatch = {
+        batchId: "test-failed-batch",
+        cases: batch.cases.map((c, i) => ({
+          ...c,
+          id: "rollback-" + i,
+          number: i === 0 ? "ROLLBACK-NEW" : "IMPORT-001",
+        })),
+      };
+      assert.equal(
+        (
+          await owner.request("/cases/import/commit", {
+            method: "POST",
+            body: failingBatch,
+          })
+        ).status,
+        409,
+      );
+      assert.equal(
+        (
+          await pool.query(
+            "SELECT 1 FROM legalflow.cases WHERE number='ROLLBACK-NEW'",
+          )
+        ).rowCount,
+        0,
+      );
+      const imported = (await owner.request("/workspace")).data.cases.find(
+        (c) => c.number === "IMPORT-001",
+      );
+      const olderPayload = { ...imported, status: "Completed" };
+      delete olderPayload.moneyOwed;
+      delete olderPayload.community;
+      assert.equal(
+        (
+          await owner.request("/cases/" + imported.id, {
+            method: "PUT",
+            body: olderPayload,
+          })
+        ).status,
+        200,
+      );
+      const preserved = (await owner.request("/workspace")).data.cases.find(
+        (c) => c.id === imported.id,
+      );
+      assert.equal(
+        preserved.moneyOwed,
+        1250.5,
+        "Older mobile clients preserve the new balance",
+      );
+      assert.equal(preserved.community, "Southland Hills");
+      const importClient = new Client();
+      await importClient.login("importcustomer");
+      assert.equal(
+        (
+          await importClient.request("/cases/import/commit", {
+            method: "POST",
+            body: batch,
+          })
+        ).status,
+        403,
+      );
+      assert.equal(
+        (await importClient.request("/workspace")).data.cases.length,
+        2,
+      );
+      const largeFile = new FormData();
+      largeFile.append(
+        "file",
+        new Blob([
+          "Case Number,Tenant,Money Owed,Apartment Community\r\n" +
+            Array.from(
+              { length: 101 },
+              (_, i) =>
+                "BULK-" + i + ",Tenant " + i + ",1000,Westbrook Station",
+            ).join("\r\n"),
+        ]),
+        "large.csv",
+      );
+      largeFile.append(
+        "defaults",
+        JSON.stringify({ clientId: importClientId, staffId }),
+      );
+      const largePreview = await owner.request("/cases/import/preview", {
+        method: "POST",
+        body: largeFile,
+      });
+      assert.equal(largePreview.data.valid, 101);
+      assert.equal(
+        (
+          await owner.request("/cases/import/commit", {
+            method: "POST",
+            body: {
+              batchId: "large-batch",
+              cases: largePreview.data.results.map((r) => r.case),
+            },
+          })
+        ).status,
+        200,
+      );
+      assert.equal(
+        (
+          await pool.query(
+            "SELECT count(*)::int AS n FROM legalflow.cases WHERE number LIKE 'BULK-%'",
+          )
+        ).rows[0].n,
+        101,
+      );
+      const portfolioPrefs = {
+        savedViews: [
+          {
+            id: "southland-view",
+            name: "Southland Hills",
+            filters: {
+              status: [],
+              clientId: "",
+              staffId: "",
+              type: "",
+              dateFrom: "",
+              dateTo: "",
+              search: "",
+              community: "Southland Hills",
+              county: "",
+              city: "",
+              state: "",
+              neighborhood: "",
+              plaintiff: "",
+            },
+          },
+        ],
+        tablePrefs: {
+          visible: ["number", "moneyOwed"],
+          order: [],
+          widths: {},
+          pageSize: 10,
+          statusTiles: ["All cases", "Rescheduled", "Completed"],
+        },
+      };
+      assert.equal(
+        (
+          await owner.request("/preferences", {
+            method: "PATCH",
+            body: portfolioPrefs,
+          })
+        ).status,
+        200,
+      );
+      const preferences = (await owner.request("/workspace")).data;
+      assert.equal(
+        preferences.savedViews[0].filters.community,
+        "Southland Hills",
+      );
+      assert.deepEqual(preferences.tablePrefs.statusTiles, [
+        "All cases",
+        "Rescheduled",
+        "Completed",
+      ]);
+      const oldVersion = preserved.updatedAt;
+      assert.equal(
+        (
+          await owner.request("/cases/bulk", {
+            method: "PATCH",
+            body: {
+              cases: [{ id: preserved.id, updatedAt: oldVersion }],
+              patch: { status: "Vacated" },
+            },
+          })
+        ).status,
+        200,
+      );
+      assert.equal(
+        (
+          await owner.request("/cases/bulk", {
+            method: "PATCH",
+            body: {
+              cases: [{ id: preserved.id, updatedAt: oldVersion }],
+              patch: { status: "Skipped" },
+            },
+          })
+        ).status,
+        409,
+        "Stale bulk changes are rejected",
+      );
+      const { env } = await import("../src/config/env.js");
+      const oldSmtp = env.SMTP_ENABLED;
+      env.SMTP_ENABLED = true;
+      try {
+        const email = await importClient.request("/reports/cases/email", {
+          method: "POST",
+          body: {
+            to: "report@test.invalid",
+            filters: portfolioPrefs.savedViews[0].filters,
+            statuses: ["All cases", "Vacated"],
+          },
+        });
+        assert.equal(email.status, 200, JSON.stringify(email.data));
+        assert.equal(email.data.count, 2);
+        const message = (
+          await pool.query(
+            "SELECT html_body FROM legalflow.email_outbox WHERE to_email='report@test.invalid'",
+          )
+        ).rows[0].html_body;
+        assert(
+          message.includes("IMPORT-001") && message.includes("IMPORT-002"),
+        );
+        assert(message.includes("All cases: 2"));
+        assert(!message.includes("<script>"));
+      } finally {
+        env.SMTP_ENABLED = oldSmtp;
+      }
+    }
     console.log(
       "Verified authentication, permissions, persistence, cases, multi-invoice billing, chat, notifications, preferences and OAuth setup",
     );

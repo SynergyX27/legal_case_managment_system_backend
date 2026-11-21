@@ -81,12 +81,25 @@ export const caseInput = z.object({
   number: short.min(1),
   title: short.min(1),
   clientId: id,
+  moneyOwed: z.number().finite().min(0).max(100000).multipleOf(0.01).optional(),
+  neighborhood: optional.optional(),
+  community: optional.optional(),
   residentName: short.min(1),
   residentAddress: text.default(""),
   residentPhone: optional,
   description: text.default(""),
   type: short.min(1),
-  status: z.enum(["Active", "Pending", "Scheduled", "Completed", "Cancelled"]),
+  status: z.enum([
+    "Active",
+    "Pending",
+    "Scheduled",
+    "Completed",
+    "Rescheduled",
+    "Skipped",
+    "Vacated",
+    "Vacant",
+    "Cancelled",
+  ]),
   priority: z.enum(["Low", "Medium", "High", "Urgent"]),
   notes: text.default(""),
   serviceDate: maybeDate,
@@ -162,6 +175,12 @@ export const preferenceInput = z.object({
           dateTo: maybeDate,
           mine: z.boolean().optional(),
           search: optional,
+          community: optional.optional(),
+          neighborhood: optional.optional(),
+          plaintiff: optional.optional(),
+          county: optional.optional(),
+          city: optional.optional(),
+          state: optional.optional(),
         }),
       }),
     )
@@ -169,6 +188,25 @@ export const preferenceInput = z.object({
     .optional(),
   tablePrefs: z
     .object({
+      statusTiles: z
+        .array(
+          z.enum([
+            "All cases",
+            ...[
+              "Active",
+              "Pending",
+              "Scheduled",
+              "Completed",
+              "Rescheduled",
+              "Skipped",
+              "Vacated",
+              "Vacant",
+              "Cancelled",
+            ],
+          ]),
+        )
+        .max(10)
+        .optional(),
       visible: z.array(short).max(60),
       order: z.array(short).max(60),
       widths: z.record(z.number().min(20).max(2000)),
