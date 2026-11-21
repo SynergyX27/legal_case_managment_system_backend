@@ -1258,6 +1258,202 @@ test("HTTP API, PostgreSQL persistence and access isolation", async (t) => {
         env.SMTP_ENABLED = oldSmtp;
       }
     }
+    {
+      const currentCase = (await owner.request("/workspace")).data.cases.find(
+        (c) => c.number === "BULK-0",
+      );
+      assert.equal(
+        (
+          await owner.request("/cases/" + currentCase.id, {
+            method: "PUT",
+            body: { ...currentCase, moneyOwed: 15000 },
+          })
+        ).status,
+        200,
+      );
+      const invoiceId = "balance-test-" + randomUUID();
+      const record = {
+        id: invoiceId,
+        caseId: currentCase.id,
+        clientId: currentCase.clientId,
+        date: "2026-11-21",
+        dueDate: "2026-12-21",
+        lines: [
+          { description: "Partial case settlement", qty: 1, price: 2000 },
+        ],
+        taxRate: 0,
+        status: "Sent",
+      };
+      assert.equal(
+        (
+          await owner.request("/invoices/" + invoiceId, {
+            method: "PUT",
+            body: record,
+          })
+        ).status,
+        200,
+      );
+      let state = (await owner.request("/workspace")).data;
+      assert.equal(
+        state.cases.find((c) => c.id === currentCase.id).balanceOwed,
+        15000,
+        "Sending an invoice does not count as payment",
+      );
+      const issued = state.invoices.find((i) => i.id === invoiceId);
+      assert.equal(
+        (
+          await owner.request("/invoices/" + invoiceId, {
+            method: "PUT",
+            body: { ...issued, status: "Paid" },
+          })
+        ).status,
+        200,
+      );
+      state = (await owner.request("/workspace")).data;
+      const balance = state.cases.find((c) => c.id === currentCase.id);
+      assert.equal(balance.balanceOwed, 13000);
+      assert.equal(
+        balance.moneyOwed,
+        15000,
+        "The imported amount remains available for reference",
+      );
+      assert.equal(balance.paidInvoiceTotal, 2000);
+      assert.equal(
+        (
+          await owner.request("/invoices/" + invoiceId, {
+            method: "PUT",
+            body: { ...issued, status: "Paid" },
+          })
+        ).status,
+        409,
+      );
+      assert.equal(
+        (await owner.request("/workspace")).data.cases.find(
+          (c) => c.id === currentCase.id,
+        ).balanceOwed,
+        13000,
+      );
+      const secondInvoice = {
+        ...record,
+        id: "balance-second-" + randomUUID(),
+        status: "Paid",
+        lines: [{ description: "Second settlement", qty: 1, price: 1000 }],
+      };
+      assert.equal(
+        (
+          await owner.request("/invoices/" + secondInvoice.id, {
+            method: "PUT",
+            body: secondInvoice,
+          })
+        ).status,
+        200,
+      );
+      assert.equal(
+        (await owner.request("/workspace")).data.cases.find(
+          (c) => c.id === currentCase.id,
+        ).balanceOwed,
+        12000,
+      );
+      const worker = new Client();
+      await worker.login("staff");
+      assert.equal(
+        (await worker.request("/workspace")).data.cases.find(
+          (c) => c.id === currentCase.id,
+        ).balanceOwed,
+        12000,
+        "Balance calculation does not depend on access to invoice details",
+      );
+    }
+    {
+      const scheduled = (await owner.request("/workspace")).data.cases.find(
+        (c) => c.number === "BULK-1",
+      );
+      const caseNumber = "LF-TEST-20261121-039";
+      assert.equal(
+        (
+          await owner.request("/cases/" + scheduled.id, {
+            method: "PUT",
+            body: {
+              ...scheduled,
+              number: caseNumber,
+              moneyOwed: 1500,
+              status: "Scheduled",
+            },
+          })
+        ).status,
+        200,
+      );
+      const paidInvoice = {
+        id: "report-paid-" + randomUUID(),
+        caseId: scheduled.id,
+        clientId: scheduled.clientId,
+        date: "2026-11-21",
+        dueDate: "2026-12-21",
+        lines: [{ description: "Recorded payment", qty: 1, price: 1000 }],
+        taxRate: 0,
+        status: "Paid",
+      };
+      assert.equal(
+        (
+          await owner.request("/invoices/" + paidInvoice.id, {
+            method: "PUT",
+            body: paidInvoice,
+          })
+        ).status,
+        200,
+      );
+      const customer = new Client();
+      await customer.login("importcustomer");
+      const pageCase = (await customer.request("/workspace")).data.cases.find(
+        (c) => c.id === scheduled.id,
+      );
+      assert.equal(pageCase.moneyOwed, 1500);
+      assert.equal(pageCase.paidInvoiceTotal, 1000);
+      assert.equal(pageCase.balanceOwed, 500);
+      const { env } = await import("../src/config/env.js");
+      const enabled = env.SMTP_ENABLED;
+      env.SMTP_ENABLED = true;
+      try {
+        for (const [viewer, recipient] of [
+          [owner, "owner-report@test.invalid"],
+          [customer, "customer-report@test.invalid"],
+        ]) {
+          const result = await viewer.request("/reports/cases/email", {
+            method: "POST",
+            body: {
+              to: recipient,
+              filters: {
+                status: [],
+                clientId: "",
+                staffId: "",
+                type: "",
+                dateFrom: "",
+                dateTo: "",
+                search: caseNumber,
+              },
+              statuses: ["All cases", "Scheduled"],
+            },
+          });
+          assert.equal(result.status, 200, JSON.stringify(result.data));
+          assert.equal(result.data.count, 1);
+          const queued = (
+            await pool.query(
+              "SELECT html_body FROM legalflow.email_outbox WHERE to_email=$1",
+              [recipient],
+            )
+          ).rows[0].html_body;
+          assert.match(queued, /<th>Original amount<\/th>/);
+          assert.match(queued, /<th>Paid amount<\/th>/);
+          assert.match(queued, /<th>Owed amount<\/th>/);
+          assert.match(
+            queued,
+            /<td>\$1,500\.00<\/td><td>\$1,000\.00<\/td><td>\$500\.00<\/td>/,
+          );
+        }
+      } finally {
+        env.SMTP_ENABLED = enabled;
+      }
+    }
     console.log(
       "Verified authentication, permissions, persistence, cases, multi-invoice billing, chat, notifications, preferences and OAuth setup",
     );

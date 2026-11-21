@@ -1,14 +1,18 @@
+import { withCaseBalances } from "../services/case-balance.service.js";
 import { pool } from "../config/database.js";
 import { publicUser } from "./user.model.js";
 import { caseScope, canMessage, can } from "../services/access.service.js";
 export async function workspace(u) {
   const scope = caseScope(u);
-  const rawCases = (
-    await pool.query(
-      `SELECT c.* FROM legalflow.cases c WHERE ${scope.sql} ORDER BY created_at DESC`,
-      scope.values,
-    )
-  ).rows;
+  const rawCases = await withCaseBalances(
+    pool,
+    (
+      await pool.query(
+        `SELECT c.* FROM legalflow.cases c WHERE ${scope.sql} ORDER BY created_at DESC`,
+        scope.values,
+      )
+    ).rows,
+  );
   const ids = rawCases.map((c) => c.id);
   const users = (
     await pool.query(

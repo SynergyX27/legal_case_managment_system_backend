@@ -1,3 +1,4 @@
+import { caseAmounts } from "./case-balance.service.js";
 export const reportKeys = [
   "community",
   "neighborhood",
@@ -51,18 +52,17 @@ export function selectReportCases(cases, filters = {}, userId = "") {
   );
 }
 export function caseMoney(cases) {
-  const owed = cases.reduce(
-    (sum, c) => sum + Math.round(Number(c.moneyOwed || 0) * 100),
-    0,
+  return cases.reduce(
+    (totals, c) => {
+      const balance = caseAmounts(c);
+      return {
+        owed: Math.round((totals.owed + balance.original) * 100) / 100,
+        cleared: Math.round((totals.cleared + balance.cleared) * 100) / 100,
+        due: Math.round((totals.due + balance.due) * 100) / 100,
+      };
+    },
+    { owed: 0, cleared: 0, due: 0 },
   );
-  const cleared = cases
-    .filter((c) => c.status === "Completed")
-    .reduce((sum, c) => sum + Math.round(Number(c.moneyOwed || 0) * 100), 0);
-  return {
-    owed: owed / 100,
-    cleared: cleared / 100,
-    due: (owed - cleared) / 100,
-  };
 }
 export const escapeHtml = (v) =>
   String(v ?? "").replace(
@@ -79,10 +79,13 @@ export function caseReportHtml(cases, filters, statuses) {
       currency: "USD",
     }).format(n);
   const totals = caseMoney(cases);
+  const totalPaid =
+    cases.reduce((sum, c) => sum + Math.round(caseAmounts(c).paid * 100), 0) /
+    100;
   const criteria =
     Object.entries(filters)
       .filter(([, v]) => (Array.isArray(v) ? v.length : !!v))
       .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(", ") : v}`)
       .join(" · ") || "All accessible cases";
-  return `<h1>Case files report</h1><p>${escapeHtml(criteria)}</p><p>${cases.length} cases · Generated ${escapeHtml(new Date().toISOString())}</p><p>Amount owed ${money(totals.owed)} · Amount cleared ${money(totals.cleared)} · Amount due ${money(totals.due)}</p><p>${statuses.map((status) => escapeHtml(status) + ": " + (status === "All cases" ? cases.length : cases.filter((c) => c.status === status).length)).join(" · ")}</p><table border="1" cellpadding="6" cellspacing="0"><thead><tr>${["Case number", "Community", "Neighborhood", "Plaintiff", "Tenant", "Address", "County", "City", "State", "Status", "Money owed", "Amount cleared", "Amount due"].map((h) => "<th>" + h + "</th>").join("")}</tr></thead><tbody>${cases.map((c) => "<tr>" + [c.number, c.community, c.neighborhood, c.plaintiff, c.residentName, c.residentAddress, c.county, c.city, c.state, c.status, money(Number(c.moneyOwed || 0)), money(c.status === "Completed" ? Number(c.moneyOwed || 0) : 0), money(c.status === "Completed" ? 0 : Number(c.moneyOwed || 0))].map((v) => "<td>" + escapeHtml(v) + "</td>").join("") + "</tr>").join("")}</tbody></table>`;
+  return `<h1>Case files report</h1><p>${escapeHtml(criteria)}</p><p>${cases.length} cases · Generated ${escapeHtml(new Date().toISOString())}</p><p>Original amount ${money(totals.owed)} · Paid amount ${money(totalPaid)} · Owed amount ${money(totals.due)}</p><p>${statuses.map((status) => escapeHtml(status) + ": " + (status === "All cases" ? cases.length : cases.filter((c) => c.status === status).length)).join(" · ")}</p>${cases.some((c) => c.status === "Completed") ? "<p>Completed cases are treated as fully cleared. Paid amount shows recorded invoice payments.</p>" : ""}<table border="1" cellpadding="6" cellspacing="0"><thead><tr>${["Case number", "Community", "Neighborhood", "Plaintiff", "Tenant", "Address", "County", "City", "State", "Status", "Original amount", "Paid amount", "Owed amount"].map((h) => "<th>" + h + "</th>").join("")}</tr></thead><tbody>${cases.map((c) => "<tr>" + [c.number, c.community, c.neighborhood, c.plaintiff, c.residentName, c.residentAddress, c.county, c.city, c.state, c.status, money(caseAmounts(c).original), money(caseAmounts(c).paid), money(caseAmounts(c).due)].map((v) => "<td>" + escapeHtml(v) + "</td>").join("") + "</tr>").join("")}</tbody></table>`;
 }

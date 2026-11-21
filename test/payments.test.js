@@ -25,9 +25,8 @@ test("Stripe checkout authorization, idempotency and signed payment confirmation
   const { pool } = await import("../src/config/database.js");
   const { migrate } = await import("../scripts/migrate.js");
   const { createApp } = await import("../src/app.js");
-  const { createUserRecord } = await import(
-    "../src/controllers/auth.controller.js"
-  );
+  const { createUserRecord } =
+    await import("../src/controllers/auth.controller.js");
   const { stripeClient } = await import("../src/services/payments.service.js");
   let server;
   const stripe = stripeClient(),
@@ -206,6 +205,7 @@ test("Stripe checkout authorization, idempotency and signed payment confirmation
         await owner.request(`/cases/${caseId}`, "PUT", {
           id: caseId,
           number: "PAY-001",
+          moneyOwed: 15000,
           title: "Payment case",
           staffId: staffRecord.id,
           managerId: managerRecord.id,
@@ -342,6 +342,16 @@ test("Stripe checkout authorization, idempotency and signed payment confirmation
     );
     assert.equal(current.status, "Paid");
     assert.equal(current.paymentMethod, "stripe");
+    const paidCase = (await customer.request("/workspace")).data.cases.find(
+      (c) => c.id === caseId,
+    );
+    assert.equal(paidCase.moneyOwed, 15000);
+    assert.equal(paidCase.paidInvoiceTotal, 220);
+    assert.equal(
+      paidCase.balanceOwed,
+      14780,
+      "Duplicate Stripe webhooks deduct the invoice only once",
+    );
     const receiptRows = (
       await pool.query(
         "SELECT to_email FROM legalflow.email_outbox WHERE event_key=$1",

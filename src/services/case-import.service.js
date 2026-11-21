@@ -29,7 +29,13 @@ const aliases = {
   status: ["status"],
   type: ["type", "casetype"],
   priority: ["priority"],
-  moneyOwed: ["moneyowed", "amountowed", "casebalance", "balanceowed"],
+  moneyOwed: [
+    "moneyowed",
+    "amountowed",
+    "casebalance",
+    "balanceowed",
+    "originalbalance",
+  ],
   serviceDate: ["setoutdate", "servicedate"],
   serviceTime: ["setouttime", "servicetime"],
   visLO: ["vislo"],
@@ -88,9 +94,19 @@ export async function parseCaseFile(file) {
   );
   assert(sheet.columnCount <= 100, 422, "The file has too many columns");
   const headers = new Map();
+  let hasOriginalBalance = false;
+  sheet.getRow(1).eachCell((cell) => {
+    if (normalize(value(cell)) === "originalbalance") hasOriginalBalance = true;
+  });
   sheet.getRow(1).eachCell((cell, index) => {
     const header = normalize(value(cell));
     const key = Object.keys(aliases).find((k) => aliases[k].includes(header));
+    if (
+      key === "moneyOwed" &&
+      hasOriginalBalance &&
+      header !== "originalbalance"
+    )
+      return;
     if (key) {
       assert(!headers.has(key), 422, `Duplicate column for ${key}`);
       headers.set(key, index);

@@ -153,3 +153,60 @@ test("case-balance reports isolate exact communities and use completion status f
   assert(html.includes("All cases: 1"));
   assert(!html.includes("<script>"));
 });
+test("paid invoice balances count each invoice once, include tax and never go negative", async () => {
+  const { paidTotalsByCase, caseAmounts } =
+    await import("../src/services/case-balance.service.js");
+  const invoice = {
+    caseId: "one",
+    status: "Paid",
+    lines: [{ qty: 1, price: 2000 }],
+    taxRate: 0,
+  };
+  const totals = paidTotalsByCase([
+    { data: invoice, case_id: "one" },
+    { data: { ...invoice, status: "Sent" }, case_id: "one" },
+    { data: { ...invoice, status: "Draft" }, case_id: "one" },
+    { data: { ...invoice, caseId: "other" }, case_id: "other" },
+  ]);
+  assert.equal(totals.get("one"), 2000);
+  assert.deepEqual(
+    caseAmounts({
+      moneyOwed: 15000,
+      paidInvoiceTotal: totals.get("one"),
+      status: "Active",
+    }),
+    { original: 15000, paid: 2000, cleared: 2000, due: 13000 },
+  );
+  assert.deepEqual(
+    caseMoney([{ moneyOwed: 15000, paidInvoiceTotal: 2000, status: "Active" }]),
+    { owed: 15000, cleared: 2000, due: 13000 },
+  );
+  assert.equal(
+    caseAmounts({ moneyOwed: 100, paidInvoiceTotal: 150, status: "Active" })
+      .due,
+    0,
+  );
+  assert.equal(
+    caseAmounts({
+      moneyOwed: 15000,
+      paidInvoiceTotal: 2000,
+      status: "Completed",
+    }).due,
+    0,
+  );
+  const cents = paidTotalsByCase([
+    { ...invoice, lines: [{ qty: 3, price: 0.1 }], taxRate: 10 },
+  ]).get("one");
+  assert.equal(cents, 0.33);
+  const file = await parseCaseFile({
+    originalname: "export.csv",
+    buffer: Buffer.from(
+      "Case Number,Tenant,Original balance,Balance owed\r\nROUNDTRIP,Tenant,15000,13000",
+    ),
+  });
+  assert.equal(
+    file[0].moneyOwed,
+    "15000",
+    "Export/import preserves the original amount, avoiding a second payment deduction",
+  );
+});

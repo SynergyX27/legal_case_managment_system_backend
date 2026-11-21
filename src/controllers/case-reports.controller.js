@@ -1,3 +1,4 @@
+import { withCaseBalances } from "../services/case-balance.service.js";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { pool } from "../config/database.js";
@@ -25,12 +26,15 @@ export async function email(req, res) {
     "Email delivery is disabled. Ask the owner to configure email settings.",
   );
   const scope = caseScope(req.user);
-  const rows = (
-    await pool.query(
-      `SELECT c.*, cl.data AS customer_data, staff.name AS staff_name FROM legalflow.cases c JOIN legalflow.clients cl ON cl.id=c.client_id LEFT JOIN legalflow.users staff ON staff.id=c.staff_id WHERE ${scope.sql} ORDER BY c.number`,
-      scope.values,
-    )
-  ).rows;
+  const rows = await withCaseBalances(
+    pool,
+    (
+      await pool.query(
+        `SELECT c.*, cl.data AS customer_data, staff.name AS staff_name FROM legalflow.cases c JOIN legalflow.clients cl ON cl.id=c.client_id LEFT JOIN legalflow.users staff ON staff.id=c.staff_id WHERE ${scope.sql} ORDER BY c.number`,
+        scope.values,
+      )
+    ).rows,
+  );
   const cases = selectReportCases(
     rows.map((r) => ({
       ...r.data,
