@@ -125,6 +125,21 @@ test("Workspace hierarchy, customer account isolation, owner-only moves and dura
       comm = await client("community"),
       out = await client("outsider"),
       worker = await client("staff");
+    // Owner contact edits keep identities and assignments intact.
+    const contactOld = await findUser(outsider.id);
+    const contactPatch = {role: "customer", status: "Active", updatedAt: contactOld.updated_at.toISOString(), email: "UPDATED-CONTACT@example.com", phone: "+1 555 123 4567"};
+    assert.equal((await worker(`/users/${outsider.id}/access`, "PATCH", contactPatch)).status, 403);
+    assert.equal((await own(`/users/${outsider.id}/access`, "PATCH", {...contactPatch, email:"bad"})).status, 422);
+    assert.equal((await own(`/users/${outsider.id}/access`, "PATCH", contactPatch)).status, 200);
+    const contactNew = await findUser(outsider.id);
+    assert.equal(contactNew.email, "updated-contact@example.com");
+    assert.equal(contactNew.phone, "+1 555 123 4567");
+    assert.equal(contactNew.client_id, outsider.client_id);
+    assert.equal((await pool.query("SELECT data FROM legalflow.clients WHERE id=$1", [outsider.client_id])).rows[0].data.email, contactNew.email);
+    assert.equal((await own(`/users/${outsider.id}/access`, "PATCH", contactPatch)).status, 409);
+    assert.equal((await own(`/users/${outsider.id}/access`, "PATCH", {...contactPatch, updatedAt:contactNew.updated_at.toISOString(), email:owner.email})).status, 409);
+    const newLogin = await fetch(base + "/mobile/auth/login", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({identity:contactNew.email,password:"Workspace-test-password-123"})});
+    assert.equal(newLogin.status, 200);
     const createWorkspace = async (
       name,
       kind,

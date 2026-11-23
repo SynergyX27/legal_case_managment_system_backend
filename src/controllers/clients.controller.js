@@ -7,6 +7,7 @@ export async function putClient(req, res) {
   owner(req.user);
   const v = schema.clientInput.parse({ ...req.body, id: req.params.id });
   await transaction(async (db) => {
+    await db.query("SELECT pg_advisory_xact_lock(hashtext('legalflow-user-access'))");
     assert(
       (
         await db.query(

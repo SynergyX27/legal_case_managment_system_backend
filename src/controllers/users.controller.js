@@ -20,6 +20,8 @@ export async function updateUser(req, res) {
     await db.query(
       "SELECT pg_advisory_xact_lock(hashtext('legalflow-user-access'))",
     );
+    const actor = await findUser(req.user.id, db);
+    assert(actor?.role === "owner" && actor.status === "Active", 403, "Owner access required");
     const old = await findUser(id, db);
     assert(old, 404, "User not found");
     assert(
@@ -28,6 +30,10 @@ export async function updateUser(req, res) {
       409,
       "User changed on another device. Reopen access before saving",
     );
+    const email = v.email ?? old.email;
+    const phone = v.phone ?? old.phone;
+    assert(!(await db.query("SELECT 1 FROM legalflow.users WHERE lower(email)=lower($1) AND id<>$2", [email, id])).rowCount,
+      409, "Another account already uses this email address");
     const managerId =
       v.role === "staff" ? (v.managerId ?? old.manager_id ?? "") : null;
     if (v.role === "staff") {
@@ -96,7 +102,7 @@ export async function updateUser(req, res) {
         "Keep at least one active owner",
       );
     await db.query(
-      "UPDATE legalflow.users SET role=$2,status=$3,password_hash=COALESCE($4,password_hash),manager_id=$5,permissions=$6,updated_at=now() WHERE id=$1",
+      "UPDATE legalflow.users SET role=$2,status=$3,password_hash=COALESCE($4,password_hash),manager_id=$5,permissions=$6,email=$7,phone=$8,updated_at=now() WHERE id=$1",
       [
         id,
         v.role,
@@ -106,8 +112,19 @@ export async function updateUser(req, res) {
         ["staff", "manager"].includes(v.role)
           ? (v.permissions ?? old.permissions)
           : {},
+        email,
+        phone,
       ],
     );
+    // A sole customer login is also the company contact. Multiple logins retain
+    // separate personal contact details; edit the company contact in Customers.
+    if (old.client_id && (v.email !== undefined || v.phone !== undefined)) {
+      await db.query("SELECT id FROM legalflow.clients WHERE id=$1 FOR UPDATE", [old.client_id]);
+      if ((await db.query("SELECT id FROM legalflow.users WHERE client_id=$1", [old.client_id])).rowCount === 1)
+        await db.query("UPDATE legalflow.clients SET data=data || jsonb_build_object('email',$2::text,'phone',$3::text) WHERE id=$1", [old.client_id, email, phone]);
+      else
+        await db.query("UPDATE legalflow.clients SET data=data || CASE WHEN lower(data->>'email')=lower($2) THEN jsonb_build_object('email',$3::text,'phone',$4::text) ELSE '{}'::jsonb END WHERE id=$1", [old.client_id, old.email, email, phone]);
+    }
     if (v.role === "staff" && managerId !== old.manager_id) {
       // Move existing cases with the staff member, preserving the required team relationship.
       await db.query(

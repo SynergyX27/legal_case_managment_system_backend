@@ -51,6 +51,8 @@ export const userInput = z.object({
   managerId: optional,
 });
 export const accessInput = z.object({
+  email: userInput.shape.email.optional(),
+  phone: short.optional(),
   role,
   status: z.enum(["Active", "Inactive"]),
   password: password.optional(),
