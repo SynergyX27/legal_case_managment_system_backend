@@ -33,7 +33,7 @@ export async function validateAssignments(c, u, db) {
   );
   assert(
     (
-      await db.query("SELECT 1 FROM legalflow.clients WHERE id=$1", [
+      await db.query("SELECT 1 FROM legalflow.clients WHERE id=$1 AND data->>'deleted' IS DISTINCT FROM 'true'", [
         c.clientId,
       ])
     ).rowCount,

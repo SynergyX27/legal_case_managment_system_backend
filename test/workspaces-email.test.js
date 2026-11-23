@@ -592,6 +592,22 @@ test("Workspace hierarchy, customer account isolation, owner-only moves and dura
     const emptyCase = await makeCase("DELETE-EMPTY", a);
     const caseDeletion = await own(`/cases/${emptyCase}`, "DELETE");
     assert.equal(caseDeletion.status, 200, JSON.stringify(caseDeletion.data));
+    // Customer details and their main access are managed in one transaction.
+    const profile=(await pool.query("SELECT data FROM legalflow.clients WHERE id=$1",[outsider.client_id])).rows[0].data;
+    const updateCustomer=await own(`/clients/${outsider.client_id}`,"PUT",{...profile,email:"main-customer@example.com",phone:"5550001",username:"main-customer-new",password:"Customer-password-123"});
+    assert.equal(updateCustomer.status,200,JSON.stringify(updateCustomer.data));
+    assert.equal((await findUser(outsider.id)).email,"main-customer@example.com");
+    assert.equal((await own(`/clients/${primary.client_id}`,"DELETE")).status,409);
+    const orphanId=randomUUID();
+    await pool.query("INSERT INTO legalflow.clients(id,data) VALUES($1,$2)",[orphanId,{id:orphanId,name:"Legacy customer",email:"legacy@example.com",phone:"",address:"",status:"Active"}]);
+    assert.equal((await own(`/clients/${orphanId}`,"PUT",{name:"Legacy customer",email:"legacy@example.com"})).status,422);
+    assert.equal((await own(`/clients/${orphanId}`,"PUT",{name:"Legacy customer",email:"legacy@example.com",username:"legacy-customer",password:"Customer-password-123"})).status,200);
+    const legacyUser=(await pool.query("SELECT id FROM legalflow.users WHERE client_id=$1 AND deleted_at IS NULL",[orphanId])).rows[0];
+    assert.equal((await findUser(legacyUser.id)).customer_access,"all");
+    const legacyExtra=await user("legacy-extra","customer",owner,{clientId:orphanId});
+    assert.equal((await own(`/clients/${orphanId}`,"DELETE")).status,409,"Extra logins block customer removal");
+    assert.equal((await own(`/users/${legacyExtra.id}`,"DELETE",{updatedAt:(await findUser(legacyExtra.id)).updated_at.toISOString()})).status,200);
+    assert.equal((await own(`/clients/${orphanId}`,"DELETE")).status,200);
     // Deletion applies to every role and revokes all sessions without deleting history.
     const remove = async (who, request = own) => request(`/users/${who.id}`, "DELETE", {updatedAt:(await findUser(who.id)).updated_at.toISOString()});
     assert.equal((await remove(staff, worker)).status,403);
@@ -610,7 +626,8 @@ test("Workspace hierarchy, customer account isolation, owner-only moves and dura
     assert.equal(await findUser(emptyStaff.id), undefined);
     assert.equal((await remove(emptyManager)).status,200);
     assert.equal((await remove(emptyOwner)).status,200);
-    assert.equal((await remove(emptyCustomer)).status,200);
+    assert.equal((await remove(emptyCustomer)).status,409,"Main customer login belongs in Customers");
+    assert.equal((await own(`/clients/${emptyCustomer.client_id}`, "DELETE")).status,200);
     assert.equal((await emptyCustomerSession("/workspace")).status,401);
     const deletedLogin = await fetch(base + "/mobile/auth/login", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({identity:"delete-customer",password:"Workspace-test-password-123"})});
     assert.equal(deletedLogin.status,401);

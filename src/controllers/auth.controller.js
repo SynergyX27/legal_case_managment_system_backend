@@ -54,7 +54,7 @@ export async function createUserRecord(input, actor = null) {
           "Only the owner can link an existing customer",
         );
         const old = await db.query(
-          "SELECT * FROM legalflow.clients WHERE id=$1 FOR UPDATE",
+          "SELECT * FROM legalflow.clients WHERE id=$1 AND data->>'deleted' IS DISTINCT FROM 'true' FOR UPDATE",
           [clientId],
         );
         assert(old.rowCount, 422, "Customer not found");
@@ -88,7 +88,11 @@ export async function createUserRecord(input, actor = null) {
         data.role === "staff" ? data.managerId : null,
       ],
     );
-    if (data.role === "customer" && data.clientId)
+    if (data.role === "customer") {
+      const live=(await db.query("SELECT id FROM legalflow.users WHERE client_id=$1 AND deleted_at IS NULL",[clientId])).rows;
+      if(live.length===1) await db.query("UPDATE legalflow.clients SET data=data || jsonb_build_object('primaryUserId',$2::text) WHERE id=$1",[clientId,id]);
+    }
+    if (data.role === "customer" && data.clientId && (await db.query("SELECT 1 FROM legalflow.users WHERE client_id=$1 AND id<>$2 AND deleted_at IS NULL",[clientId,id])).rowCount)
       await db.query(
         "UPDATE legalflow.users SET customer_access='community' WHERE id=$1",
         [id],

@@ -157,6 +157,11 @@ export async function deleteUser(req, res) {
     assert(actor?.role === "owner" && actor.status === "Active", 403, "Owner access required");
     const old = await findUser(id, db);
     assert(old, 404, "User not found");
+    if(old.client_id) {
+      const client=(await db.query("SELECT * FROM legalflow.clients WHERE id=$1",[old.client_id])).rows[0];
+      const {primaryLogin}=await import("./clients.controller.js");
+      assert((await primaryLogin(db,client))?.id !== id,409,"Manage or delete the main customer account from Customers. Additional logins are managed in Workspaces");
+    }
     assert(id !== actor.id, 422, "You cannot delete your own account");
     // Prevent concurrent assignments while checking and deleting this login.
     await db.query("SELECT id FROM legalflow.users WHERE id=$1 FOR UPDATE", [id]);

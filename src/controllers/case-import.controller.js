@@ -39,7 +39,7 @@ export async function preview(req, res) {
     );
   }
   const [clients, users, numbers, fields] = await Promise.all([
-    pool.query("SELECT id,data FROM legalflow.clients"),
+    pool.query("SELECT id,data FROM legalflow.clients WHERE data->>'deleted' IS DISTINCT FROM 'true'"),
     pool.query(
       "SELECT id,name,email,username,role,status,manager_id,client_id FROM legalflow.users WHERE deleted_at IS NULL",
     ),

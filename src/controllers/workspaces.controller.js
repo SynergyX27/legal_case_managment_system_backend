@@ -112,7 +112,7 @@ export async function save(req, res) {
     ).rows[0];
     assert(
       (
-        await db.query("SELECT 1 FROM legalflow.clients WHERE id=$1", [
+        await db.query("SELECT 1 FROM legalflow.clients WHERE id=$1 AND data->>'deleted' IS DISTINCT FROM 'true'", [
           v.clientId,
         ])
       ).rowCount,

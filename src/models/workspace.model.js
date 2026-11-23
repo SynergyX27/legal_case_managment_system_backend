@@ -57,8 +57,8 @@ export async function workspace(u) {
   ] = await Promise.all([
     pool.query(
       u.role === "owner" || can(u, "cases.create")
-        ? "SELECT data FROM legalflow.clients ORDER BY created_at DESC"
-        : "SELECT data FROM legalflow.clients WHERE id=ANY($1::text[])",
+        ? "SELECT data FROM legalflow.clients WHERE data->>'deleted' IS DISTINCT FROM 'true' ORDER BY created_at DESC"
+        : "SELECT data FROM legalflow.clients WHERE id=ANY($1::text[]) AND data->>'deleted' IS DISTINCT FROM 'true'",
       [
         ...(u.role === "owner" || can(u, "cases.create")
           ? []
@@ -165,7 +165,10 @@ export async function workspace(u) {
         : [],
     accounts: [{ id: "company", name: "LegalFlow" }],
     users: userViews,
-    clients: clients.rows.map((c) => c.data),
+    clients: clients.rows.map(({data}) => {
+      const logins=users.filter(p => p.client_id===data.id).sort((a,b) => Number(b.id===data.primaryUserId)-Number(a.id===data.primaryUserId) || Number(b.email.toLowerCase()===(data.email||"").toLowerCase())-Number(a.email.toLowerCase()===(data.email||"").toLowerCase()) || new Date(a.created_at)-new Date(b.created_at) || a.id.localeCompare(b.id));
+      return {...data, primaryUserId:logins[0]?.id};
+    }),
     cases: rawCases.map((c) => ({
       ...c.data,
       id: c.id,
