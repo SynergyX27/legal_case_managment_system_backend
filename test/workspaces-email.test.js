@@ -573,6 +573,25 @@ test("Workspace hierarchy, customer account isolation, owner-only moves and dura
       4,
       "Deleting empty groups must not delete cases",
     );
+    const mailCase = await makeCase("DELETE-MAIL", a);
+    const thread = randomUUID(), msg = randomUUID(), outbox = randomUUID();
+    await pool.query("INSERT INTO legalflow.email_outbox(id,event_key,to_email,subject,text_body,html_body) VALUES($1,$2,'recipient@example.com','test','test','')", [outbox,`conversation:${randomUUID()}`]);
+    await pool.query("INSERT INTO legalflow.email_threads(id,case_id,customer_user_id,subject,created_by) VALUES($1,$2,$3,'Delete test',$4)", [thread,mailCase,primary.id,owner.id]);
+    await pool.query("INSERT INTO legalflow.email_messages(id,thread_id,direction,sender_id,from_email,to_email,body,message_id,outbox_id) VALUES($1,$2,'outgoing',$3,'company@example.com','recipient@example.com','test',$4,$5)", [msg,thread,owner.id,`<${msg}@example.com>`,outbox]);
+    await pool.query("INSERT INTO legalflow.email_reads(thread_id,user_id) VALUES($1,$2)", [thread,owner.id]);
+    await pool.query("INSERT INTO legalflow.email_attachments(id,message_id,name,mime,bytes,dropbox_path) VALUES($1,$2,'note.txt','text/plain',4,'')", [randomUUID(),msg]);
+    assert.equal((await own(`/cases/${mailCase}`, "DELETE")).status,409, "Email deletion needs explicit confirmation");
+    await pool.query("UPDATE legalflow.email_outbox SET state='sending' WHERE id=$1", [outbox]);
+    assert.equal((await own(`/cases/${mailCase}`, "DELETE", {deleteEmailConversations:true})).status,409, "Do not race an in-flight email");
+    assert.equal((await pool.query("SELECT 1 FROM legalflow.email_threads WHERE id=$1",[thread])).rowCount,1);
+    await pool.query("UPDATE legalflow.email_outbox SET state='pending' WHERE id=$1", [outbox]);
+    const confirmedDelete = await own(`/cases/${mailCase}`, "DELETE", {deleteEmailConversations:true});
+    assert.equal(confirmedDelete.status,200,JSON.stringify(confirmedDelete.data));
+    for (const [table,column,key] of [["cases","id",mailCase],["email_threads","id",thread],["email_messages","id",msg],["email_reads","thread_id",thread],["email_attachments","message_id",msg],["email_outbox","id",outbox]])
+      assert.equal((await pool.query(`SELECT 1 FROM legalflow.${table} WHERE ${column}=$1`,[key])).rowCount,0,table);
+    const emptyCase = await makeCase("DELETE-EMPTY", a);
+    const caseDeletion = await own(`/cases/${emptyCase}`, "DELETE");
+    assert.equal(caseDeletion.status, 200, JSON.stringify(caseDeletion.data));
     // Deletion applies to every role and revokes all sessions without deleting history.
     const remove = async (who, request = own) => request(`/users/${who.id}`, "DELETE", {updatedAt:(await findUser(who.id)).updated_at.toISOString()});
     assert.equal((await remove(staff, worker)).status,403);

@@ -5,7 +5,8 @@ import { queueCaseOpened } from "../services/email-events.service.js";
 import { permit } from "../services/access.service.js";
 import { findUser } from "../models/user.model.js";
 import { randomUUID } from "node:crypto";
-import { transaction } from "../config/database.js";
+import { pool, transaction } from "../config/database.js";
+import { removeFile } from "../services/dropbox.service.js";
 import { assert } from "../utils/errors.js";
 import { accessibleCase, validateAssignments } from "../models/case.model.js";
 import { audit, activity, notify } from "../models/audit.model.js";
@@ -151,27 +152,71 @@ export async function putCase(req, res) {
   res.json({ ok: true, id });
 }
 export async function deleteCase(req, res) {
-  permit(req.user, "cases.delete");
-  await transaction(async (db) => {
-    await accessibleCase(req.user, req.params.id, db, {
-      write: true,
-      lock: true,
+  let step = "permission";
+  const cleanup = [];
+  try {
+    permit(req.user, "cases.delete");
+    await transaction(async (db) => {
+      // Coordinate with inbox attachment uploads without waiting on a long IMAP poll.
+      step = "email-sync";
+      const sync = await db.query("SELECT pg_try_advisory_xact_lock(hashtext('legalflow-email-incoming')) AS acquired");
+      assert(sync.rows[0].acquired, 409, "Email synchronization is running. Try deleting the case again shortly");
+      step = "case-access";
+      await accessibleCase(req.user, req.params.id, db, {write: true, lock: true});
+      step = "linked-records";
+      assert(!(await db.query(
+        "SELECT 1 FROM legalflow.documents WHERE case_id=$1 UNION ALL SELECT 1 FROM legalflow.invoices WHERE case_id=$1",
+        [req.params.id],
+      )).rowCount, 409,
+      "Cases with documents or invoices must be retained. Delete their documents or cancel the case");
+      const threads = await db.query("SELECT id FROM legalflow.email_threads WHERE case_id=$1 FOR UPDATE", [req.params.id]);
+      assert(!threads.rowCount || req.body?.deleteEmailConversations === true, 409,
+        "This case has email conversations. Confirm deletion of the case and its linked email conversations");
+      step = "email-outbox";
+      const mail = await db.query(
+        "SELECT o.id,o.state FROM legalflow.email_outbox o WHERE o.id IN (SELECT m.outbox_id FROM legalflow.email_messages m JOIN legalflow.email_threads t ON t.id=m.thread_id WHERE t.case_id=$1) OR o.event_key=$2 FOR UPDATE",
+        [req.params.id, `case.created:${req.params.id}`],
+      );
+      assert(!mail.rows.some(m => m.state === "sending"), 409,
+        "An email for this case is currently being sent. Try deleting the case again shortly");
+      step = "email-attachments";
+      const attachments = await db.query(
+        "SELECT a.* FROM legalflow.email_attachments a JOIN legalflow.email_messages m ON m.id=a.message_id JOIN legalflow.email_threads t ON t.id=m.thread_id WHERE t.case_id=$1 FOR UPDATE OF a",
+        [req.params.id],
+      );
+      // Durable retries use the existing document reconciliation queue.
+      for (const file of attachments.rows) {
+        if (!file.dropbox_path) continue;
+        const id = randomUUID();
+        const queued = await db.query("INSERT INTO legalflow.documents(id,case_id,name,mime,bytes,kind,dropbox_path,uploaded_by,state) VALUES($1,NULL,$2,$3,$4,'other',$5,$6,'deleting') ON CONFLICT(dropbox_path) DO NOTHING RETURNING id", [id,file.name,file.mime,file.bytes,file.dropbox_path,req.user.id]);
+        if (queued.rowCount) cleanup.push({id,path:file.dropbox_path});
+      }
+      step = "email-conversations";
+      // Messages, attachment rows and read markers cascade with the thread.
+      await db.query("DELETE FROM legalflow.email_threads WHERE case_id=$1", [req.params.id]);
+      if (mail.rowCount) await db.query("DELETE FROM legalflow.email_outbox WHERE id=ANY($1::text[])", [mail.rows.map(m => m.id)]);
+      step = "delete-case";
+      await db.query("DELETE FROM legalflow.cases WHERE id=$1", [req.params.id]);
+      step = "audit";
+      await audit(db, req.user, "case.deleted-with-email", req.params.id);
+      step = "commit";
     });
-    assert(
-      !(
-        await db.query(
-          "SELECT 1 FROM legalflow.documents WHERE case_id=$1 UNION ALL SELECT 1 FROM legalflow.invoices WHERE case_id=$1",
-          [req.params.id],
-        )
-      ).rowCount,
-      409,
-      "Cases with documents or invoices must be retained. Delete their documents or cancel the case",
-    );
-    await db.query("DELETE FROM legalflow.cases WHERE id=$1", [req.params.id]);
-    await audit(db, req.user, "case.deleted", req.params.id);
-  });
-  res.json({ ok: true });
+    // External file removal follows commit; failed removals remain retryable.
+    let cleanupPending = false;
+    for (const file of cleanup) {
+      try {
+        await removeFile(file.path);
+        await pool.query("DELETE FROM legalflow.documents WHERE id=$1 AND state='deleting'", [file.id]);
+      } catch { cleanupPending = true; }
+    }
+    res.json({ok: true, cleanupPending});
+  } catch (error) {
+    error.operation = "case.delete";
+    error.failureStep = step;
+    throw error;
+  }
 }
+
 export async function comment(req, res) {
   const { text } = schema.messageInput.parse(req.body);
   await transaction(async (db) => {

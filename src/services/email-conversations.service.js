@@ -93,7 +93,7 @@ export async function sendConversation(
     user = await findUser(user.id, db);
     assert(user?.status === "Active", 401, "Please sign in");
     let thread = threadId ? await authorizeEmail(user, threadId, db) : null;
-    const c = await accessibleCase(user, thread?.case_id || caseId, db);
+    const c = await accessibleCase(user, thread?.case_id || caseId, db, {lock: true});
     const customer = await findUser(
       thread?.customer_user_id || customerUserId,
       db,

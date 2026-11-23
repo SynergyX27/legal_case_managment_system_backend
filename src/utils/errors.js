@@ -25,7 +25,7 @@ export function errorHandler(err, req, res, next) {
     status = 409;
     message = "That username, email, case number, or record already exists";
   }
-  if (err.code === "23503") {
+  if (["23503", "23001"].includes(err.code)) {
     status = 409;
     message =
       "This record is referenced by another record. Remove or reassign those links first";
@@ -43,7 +43,19 @@ export function errorHandler(err, req, res, next) {
   }
   if (status >= 500)
     console.error(
-      JSON.stringify({ requestId, code: err.code || err.name, status }),
+      JSON.stringify({
+        event: "legalflow.request.failed", requestId,
+        code: err.code || err.name || "UNKNOWN", status,
+        method: req.method, route: req.route?.path,
+        operation: err.operation, step: err.failureStep,
+        // Names and stack frames identify failures without logging SQL, values,
+        // request bodies, credentials, cookies or provider responses.
+        table: err.table, constraint: err.constraint,
+        frames: typeof err.stack === "string" ? err.stack.split("\n").slice(1, 5).map(s => s.trim()) : undefined,
+      }),
     );
-  res.status(status).json({ error: message, requestId });
+  const diagnostic = status >= 500 && err.operation === "case.delete" && req.user?.role === "owner"
+    ? {diagnosticCode: err.code || err.name || "UNKNOWN", failedStep: err.failureStep}
+    : {};
+  res.status(status).json({ error: message, requestId, ...diagnostic });
 }
