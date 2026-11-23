@@ -356,3 +356,55 @@ export async function bulkAssign(req, res) {
   });
   res.json({ ok: true, count: v.cases.length });
 }
+export async function remove(req, res) {
+  owner(req.user);
+  const v = z.object({ updatedAt: z.string() }).parse(req.body);
+  await transaction(async (db) => {
+    await lockOwner(req, db);
+    const w = (
+      await db.query(
+        "SELECT * FROM legalflow.workspaces WHERE id=$1 FOR UPDATE",
+        [req.params.id],
+      )
+    ).rows[0];
+    assert(w, 404, "Workspace or community not found");
+    assert(
+      new Date(v.updatedAt).getTime() === w.updated_at.getTime(),
+      409,
+      "This item changed. Reload before deleting.",
+    );
+    const assigned = (
+      await db.query(
+        "SELECT 1 FROM legalflow.cases c LEFT JOIN legalflow.workspaces child ON child.id=c.workspace_id WHERE c.workspace_id=$1 OR child.parent_id=$1 LIMIT 1",
+        [w.id],
+      )
+    ).rowCount;
+    assert(
+      !assigned,
+      409,
+      "This workspace or community still contains cases. Delete its cases before deleting it.",
+    );
+    assert(
+      !(
+        await db.query(
+          "SELECT 1 FROM legalflow.workspaces WHERE parent_id=$1 LIMIT 1",
+          [w.id],
+        )
+      ).rowCount,
+      409,
+      "Delete the communities inside this workspace first, including any archived communities.",
+    );
+    await db.query(
+      "UPDATE legalflow.users SET updated_at=now() WHERE id IN(SELECT user_id FROM legalflow.workspace_members WHERE workspace_id=$1)",
+      [w.id],
+    );
+    await db.query("DELETE FROM legalflow.workspaces WHERE id=$1", [w.id]);
+    await audit(
+      db,
+      req.user,
+      w.kind === "community" ? "community.deleted" : "workspace.deleted",
+      w.id,
+    );
+  });
+  res.json({ ok: true });
+}

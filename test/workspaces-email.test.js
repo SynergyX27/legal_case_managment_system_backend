@@ -483,6 +483,81 @@ test("Workspace hierarchy, customer account isolation, owner-only moves and dura
       ).status,
       200,
     );
+    const emptyParent = await createWorkspace("Empty workspace", "territory"),
+      emptyChild = await createWorkspace(
+        "Empty community",
+        "community",
+        emptyParent,
+      );
+    const version = async (id) =>
+      (
+        await pool.query(
+          "SELECT updated_at FROM legalflow.workspaces WHERE id=$1",
+          [id],
+        )
+      ).rows[0].updated_at.toISOString();
+    assert.equal(
+      (
+        await worker("/workspaces/" + emptyChild, "DELETE", {
+          updatedAt: await version(emptyChild),
+        })
+      ).status,
+      403,
+    );
+    assert.equal(
+      (await own("/workspaces/" + c, "DELETE", { updatedAt: await version(c) }))
+        .status,
+      409,
+      "Cannot delete a community with cases",
+    );
+    assert.equal(
+      (
+        await own("/workspaces/" + savannah, "DELETE", {
+          updatedAt: await version(savannah),
+        })
+      ).status,
+      409,
+      "Parent cannot delete descendant cases",
+    );
+    assert.equal(
+      (
+        await own("/workspaces/" + emptyParent, "DELETE", {
+          updatedAt: await version(emptyParent),
+        })
+      ).status,
+      409,
+      "Parent must have no communities",
+    );
+    assert.equal(
+      (
+        await own("/workspaces/" + emptyChild, "DELETE", {
+          updatedAt: "2000-01-01",
+        })
+      ).status,
+      409,
+    );
+    assert.equal(
+      (
+        await own("/workspaces/" + emptyChild, "DELETE", {
+          updatedAt: await version(emptyChild),
+        })
+      ).status,
+      200,
+    );
+    assert.equal(
+      (
+        await own("/workspaces/" + emptyParent, "DELETE", {
+          updatedAt: await version(emptyParent),
+        })
+      ).status,
+      200,
+    );
+    assert.equal(
+      (await pool.query("SELECT count(*)::int AS n FROM legalflow.cases"))
+        .rows[0].n,
+      4,
+      "Deleting empty groups must not delete cases",
+    );
     env.IMAP_ENABLED = false;
     env.SMTP_ENABLED = false;
   } finally {
