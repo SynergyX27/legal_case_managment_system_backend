@@ -1,3 +1,5 @@
+import { visible } from "../services/access.service.js";
+import { findUser } from "../models/user.model.js";
 import {
   queueInvoiceIssued,
   queuePaymentCompleted,
@@ -90,9 +92,12 @@ export async function putInvoice(req, res) {
           v.clientId,
         ])
       ).rows;
+      const customerUsers = [];
+      for (const row of recipients)
+        customerUsers.push(await findUser(row.id, db));
       await notify(
         db,
-        recipients.map((u) => u.id),
+        customerUsers.filter((u) => visible(u, c)).map((u) => u.id),
         "invoice",
         `${number} is ${v.status.toLowerCase()}`,
         "/invoices",

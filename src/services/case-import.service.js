@@ -10,7 +10,15 @@ const normalize = (v) =>
     .toLowerCase()
     .replace(/[^a-z0-9]/g, "");
 const aliases = {
-  ref: ["ref", "reference"],
+  workspaceId: ["workspaceid", "communityworkspaceid"],
+  ref: ["ref", "reference", "refcl"],
+  attorney: ["attorney"],
+  propertyType: ["propertytype"],
+  unit: ["unit", "suiteunit", "suiteunitnumber"],
+  squareFeet: ["sf", "squarefeet"],
+  monthlyRent: ["monthlyrent"],
+  lastPaymentDate: ["lastrentalpaymentdate", "lastpaymentdate"],
+  visRI: ["visri"],
   number: ["casenumber", "caseno", "number"],
   title: ["title", "casetitle"],
   clientId: ["customer", "customerid", "client", "clientid"],
@@ -211,6 +219,12 @@ export function prepareImport(
         type: record.type || "Eviction Notice",
         priority: record.priority || "Medium",
         moneyOwed: Number(amountText),
+        squareFeet: record.squareFeet
+          ? Number(record.squareFeet.replace(/[,\s]/g, ""))
+          : undefined,
+        monthlyRent: record.monthlyRent
+          ? Number(record.monthlyRent.replace(/[$,\s]/g, ""))
+          : undefined,
         custom: defaults.custom || {},
       });
       assert(

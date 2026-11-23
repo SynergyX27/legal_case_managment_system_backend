@@ -204,3 +204,13 @@ export async function removeFile(path) {
 export async function downloadFile(path) {
   return (await call("files/download", { arg: { path } })).body;
 }
+
+// Idempotent writes are restricted to server-generated email attachment paths.
+export async function uploadEmailFile(path, buffer) {
+  return (
+    await call("files/upload", {
+      arg: { path, mode: "overwrite", autorename: false, mute: true },
+      body: buffer,
+    })
+  ).json();
+}

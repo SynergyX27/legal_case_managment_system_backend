@@ -1,3 +1,4 @@
+import { startIncomingEmailWorker } from "./services/incoming-email.service.js";
 import { startEmailWorker } from "./services/email.service.js";
 import { createApp } from "./app.js";
 import { pool } from "./config/database.js";
@@ -8,6 +9,17 @@ await pool.query("SELECT manager_id,permissions FROM legalflow.users LIMIT 1");
 await pool.query("SELECT deleted_at FROM legalflow.invoices LIMIT 1");
 await pool.query("SELECT 1 FROM legalflow.email_outbox LIMIT 1");
 await pool.query("SELECT 1 FROM legalflow.mobile_sessions LIMIT 1");
+try {
+  await pool.query("SELECT attachments FROM legalflow.email_outbox LIMIT 1");
+  await pool.query("SELECT last_value FROM legalflow.case_ref_numbers");
+  await pool.query("SELECT 1 FROM legalflow.workspaces LIMIT 1");
+  await pool.query("SELECT mail_headers FROM legalflow.email_outbox LIMIT 1");
+} catch {
+  throw new Error(
+    "Run Combined_Database_Update.sql (migrations 006 and 007) on the LegalFlow database before starting this backend.",
+  );
+}
+const incomingWorker = startIncomingEmailWorker();
 const emailWorker = startEmailWorker();
 const server = createApp().listen(env.PORT, "0.0.0.0", () =>
   console.log(`LegalFlow API listening on port ${env.PORT}`),
@@ -20,6 +32,7 @@ async function shutdown() {
   shuttingDown = true;
   const timer = setTimeout(() => process.exit(1), 15000).unref();
   server.close(async () => {
+    await incomingWorker.stop();
     await emailWorker.stop();
     await pool.end();
     clearTimeout(timer);

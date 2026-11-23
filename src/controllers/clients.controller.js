@@ -21,10 +21,17 @@ export async function putClient(req, res) {
       v.id,
       { ...v, accountId: "company", company: v.name },
     ]);
-    await db.query(
-      "UPDATE legalflow.users SET name=$2,email=$3,phone=$4,updated_at=now() WHERE client_id=$1",
-      [v.id, v.name, v.email.toLowerCase(), v.phone],
-    );
+    if (
+      (
+        await db.query("SELECT id FROM legalflow.users WHERE client_id=$1", [
+          v.id,
+        ])
+      ).rowCount === 1
+    )
+      await db.query(
+        "UPDATE legalflow.users SET name=$2,email=$3,phone=$4,updated_at=now() WHERE client_id=$1",
+        [v.id, v.name, v.email.toLowerCase(), v.phone],
+      );
     await audit(db, req.user, "customer.updated", v.id);
   });
   res.json({ ok: true });

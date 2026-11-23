@@ -49,6 +49,10 @@ export function createApp() {
     await pool.query("SELECT deleted_at FROM legalflow.invoices LIMIT 1");
     await pool.query("SELECT 1 FROM legalflow.email_outbox LIMIT 1");
     await pool.query("SELECT 1 FROM legalflow.mobile_sessions LIMIT 1");
+    await pool.query("SELECT attachments FROM legalflow.email_outbox LIMIT 1");
+    await pool.query("SELECT last_value FROM legalflow.case_ref_numbers");
+    await pool.query("SELECT 1 FROM legalflow.workspaces LIMIT 1");
+    await pool.query("SELECT mail_headers FROM legalflow.email_outbox LIMIT 1");
     res.json({ ok: true });
   });
   app.use(

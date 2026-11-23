@@ -1,3 +1,6 @@
+import { visible } from "../services/access.service.js";
+import { validateWorkspace } from "./workspaces.controller.js";
+import { territoryCode } from "../services/territories.js";
 import { queueCaseOpened } from "../services/email-events.service.js";
 import { permit } from "../services/access.service.js";
 import { findUser } from "../models/user.model.js";
@@ -43,6 +46,14 @@ export async function saveCase(db, user, input, metadata = {}) {
         "The customer cannot change after invoices have been created",
       );
   }
+  const workspaceId = v.workspaceId ?? old?.workspace_id ?? "";
+  if (workspaceId !== (old?.workspace_id || ""))
+    assert(
+      req.user.role === "owner",
+      403,
+      "Only the owner can assign or move case workspaces",
+    );
+  await validateWorkspace(db, workspaceId, v.clientId);
   await validateAssignments(v, req.user, db);
   if (old && req.user.role === "staff")
     assert(
@@ -61,6 +72,18 @@ export async function saveCase(db, user, input, metadata = {}) {
       422,
       `${f.label} is required`,
     );
+  const territory = territoryCode(v.state || old?.data.state);
+  let refId = old?.data.refId || "";
+  if (!refId && territory) {
+    const next = (
+      await db.query("SELECT nextval('legalflow.case_ref_numbers') AS n")
+    ).rows[0].n;
+    refId =
+      territory +
+      String(new Date().getUTCFullYear()).slice(-2) +
+      "-" +
+      String(next).padStart(5, "0");
+  }
   await db.query(
     "INSERT INTO legalflow.cases(id,number,client_id,staff_id,manager_id,data) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(id) DO UPDATE SET number=$2,client_id=$3,staff_id=$4,manager_id=$5,data=$6,updated_at=now()",
     [
@@ -69,9 +92,20 @@ export async function saveCase(db, user, input, metadata = {}) {
       v.clientId,
       v.staffId || null,
       v.managerId || null,
-      { moneyOwed: 0, ...old?.data, ...v, ...metadata },
+      {
+        moneyOwed: 0,
+        ...old?.data,
+        ...v,
+        ...(territory ? { state: territory } : {}),
+        refId,
+        ...metadata,
+      },
     ],
   );
+  await db.query("UPDATE legalflow.cases SET workspace_id=$2 WHERE id=$1", [
+    v.id,
+    workspaceId || null,
+  ]);
   if (!old) await queueCaseOpened(db, v);
   await activity(
     db,
@@ -85,11 +119,25 @@ export async function saveCase(db, user, input, metadata = {}) {
     "SELECT id FROM legalflow.users WHERE client_id=$1",
     [v.clientId],
   );
+  const customerUsers = [];
+  for (const row of customer.rows)
+    customerUsers.push(await findUser(row.id, db));
   await notify(
     db,
-    [v.staffId, v.managerId, ...customer.rows.map((u) => u.id)].filter(
-      (id) => id !== req.user.id,
-    ),
+    [
+      v.staffId,
+      v.managerId,
+      ...customerUsers
+        .filter((u) =>
+          visible(u, {
+            client_id: v.clientId,
+            staff_id: v.staffId,
+            manager_id: v.managerId,
+            workspace_id: workspaceId || null,
+          }),
+        )
+        .map((u) => u.id),
+    ].filter((id) => id !== req.user.id),
     "case",
     `Case ${v.number} ${old ? "updated" : "created"}`,
     `/cases/${v.id}`,

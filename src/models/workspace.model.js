@@ -1,3 +1,4 @@
+import { findUser } from "./user.model.js";
 import { withCaseBalances } from "../services/case-balance.service.js";
 import { pool } from "../config/database.js";
 import { publicUser } from "./user.model.js";
@@ -16,10 +17,11 @@ export async function workspace(u) {
   const ids = rawCases.map((c) => c.id);
   const users = (
     await pool.query(
-      "SELECT u.*,r.permissions AS role_permissions FROM legalflow.users u LEFT JOIN legalflow.role_permissions r ON r.role=u.role ORDER BY u.name",
+      "SELECT u.*,r.permissions AS role_permissions, ARRAY(SELECT w.id FROM legalflow.workspaces w JOIN legalflow.workspace_members m ON m.workspace_id=w.id OR m.workspace_id=w.parent_id WHERE m.user_id=u.id AND w.client_id=u.client_id AND NOT w.archived) AS workspace_ids FROM legalflow.users u LEFT JOIN legalflow.role_permissions r ON r.role=u.role ORDER BY u.name",
     )
   ).rows;
-  const related = users.filter(
+  const hydratedUsers = users;
+  const related = hydratedUsers.filter(
     (p) => p.id === u.id || u.role === "owner" || canMessage(u, p, rawCases),
   );
   const userViews = related.map((p) => {
@@ -122,7 +124,7 @@ export async function workspace(u) {
   const chatRead = {};
   for (const cid of [...new Set(memberRows.rows.map((m) => m.id))]) {
     const members = memberRows.rows.filter((m) => m.id === cid);
-    const other = users.find(
+    const other = hydratedUsers.find(
       (p) => p.id === members.find((m) => m.user_id !== u.id)?.user_id,
     );
     if (!canMessage(u, other, rawCases)) continue;
@@ -171,6 +173,7 @@ export async function workspace(u) {
       clientId: c.client_id,
       staffId: c.staff_id || "",
       managerId: c.manager_id || "",
+      workspaceId: c.workspace_id || "",
       accountId: "company",
       fee: 0,
       invoiceStatus: "Not Invoiced",

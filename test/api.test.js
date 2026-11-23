@@ -1454,6 +1454,196 @@ test("HTTP API, PostgreSQL persistence and access isolation", async (t) => {
         env.SMTP_ENABLED = enabled;
       }
     }
+
+    {
+      const id = randomUUID();
+      const e2Customer = new Client();
+      assert.equal((await e2Customer.login("importcustomer")).status, 200);
+      const currentStaff = (
+        await pool.query("SELECT * FROM legalflow.users WHERE id=$1", [staffId])
+      ).rows[0];
+      const input = {
+        ...data,
+        managerId: currentStaff.manager_id,
+        id,
+        number: "E2-NEW",
+        state: "Georgia",
+        attorney: "Attorney One",
+        propertyType: "APT",
+        unit: "DD300",
+        squareFeet: 1821,
+        monthlyRent: 1500,
+        lastPaymentDate: "2026-04-18",
+        visRI: "Repair railing",
+        moneyOwed: 10000,
+      };
+      const createdE2 = await owner.request("/cases/" + id, {
+        method: "PUT",
+        body: input,
+      });
+      assert.equal(createdE2.status, 200, JSON.stringify(createdE2.data));
+      const first = (await owner.request("/workspace")).data.cases.find(
+        (c) => c.id === id,
+      );
+      assert.match(first.refId, /^GA\d{2}-\d{5,}$/);
+      assert.equal(first.state, "GA");
+      assert.equal(first.monthlyRent, 1500);
+      assert.equal(
+        (
+          await owner.request("/cases/" + id, {
+            method: "PUT",
+            body: { ...first, state: "AL", refId: "OVERRIDE" },
+          })
+        ).status,
+        200,
+      );
+      const edited = (await owner.request("/workspace")).data.cases.find(
+        (c) => c.id === id,
+      );
+      assert.equal(
+        edited.refId,
+        first.refId,
+        "Reference is immutable, including client-forged values",
+      );
+      assert.equal(edited.lastPaymentDate, "2026-04-18");
+      const denied = await e2Customer.request("/company/profile", {
+        method: "PATCH",
+        body: { companyName: "Forbidden" },
+      });
+      assert.equal(denied.status, 403);
+      const profile = await owner.request("/company/profile");
+      const update = await owner.request("/company/profile", {
+        method: "PATCH",
+        body: {
+          ...profile.data,
+          companyName: "E2 Company",
+          coverText: "Prepared for {community}.",
+        },
+      });
+      assert.equal(update.status, 200);
+      assert.equal(
+        (await e2Customer.request("/company/profile")).data.companyName,
+        "E2 Company",
+      );
+      assert.equal(
+        (
+          await owner.request("/company/profile", {
+            method: "PATCH",
+            body: { logoDocumentId: "not-a-document" },
+          })
+        ).status,
+        422,
+      );
+      const { singleCasePdf } =
+        await import("../src/services/single-case-report.service.js");
+      const user = (await import("../src/models/user.model.js")).findUser;
+      const ownerRow = await user(
+        (await owner.request("/auth/session")).data.user.id,
+      );
+      const report = await singleCasePdf(ownerRow, id);
+      assert.equal(report.buffer.subarray(0, 5).toString(), "%PDF-");
+      assert(report.buffer.length > 10000);
+      const enabledEmail = (await import("../src/config/env.js")).env
+        .SMTP_ENABLED;
+      (await import("../src/config/env.js")).env.SMTP_ENABLED = true;
+      try {
+        const mailed = await owner.request("/cases/" + id + "/report/email", {
+          method: "POST",
+          body: { to: "e2-report@test.invalid" },
+        });
+        assert.equal(mailed.status, 200, JSON.stringify(mailed.data));
+        const queued = (
+          await pool.query(
+            "SELECT attachments FROM legalflow.email_outbox WHERE to_email='e2-report@test.invalid'",
+          )
+        ).rows[0];
+        assert.equal(queued.attachments[0].contentType, "application/pdf");
+        assert.equal(
+          Buffer.from(queued.attachments[0].content, "base64")
+            .subarray(0, 5)
+            .toString(),
+          "%PDF-",
+        );
+      } finally {
+        (await import("../src/config/env.js")).env.SMTP_ENABLED = enabledEmail;
+      }
+
+      await (
+        await import("node:fs/promises")
+      ).writeFile("/tmp/legalflow-e2-check.pdf", report.buffer);
+      await assert.rejects(
+        () =>
+          singleCasePdf(
+            { ...ownerRow, role: "customer", client_id: "another-client" },
+            id,
+          ),
+        /Case not found/,
+      );
+      const { env } = await import("../src/config/env.js");
+      const key = env.GOOGLE_MAPS_API_KEY,
+        originalFetch = globalThis.fetch;
+      env.GOOGLE_MAPS_API_KEY = "test-private-key";
+      let calls = 0;
+      globalThis.fetch = async (url, options) => {
+        if (String(url).startsWith("https://places.googleapis.com/")) {
+          calls++;
+          assert.equal(options.headers["X-Goog-Api-Key"], "test-private-key");
+          return new Response(
+            JSON.stringify(
+              String(url).includes("autocomplete")
+                ? {
+                    suggestions: [
+                      {
+                        placePrediction: {
+                          placeId: "place_123",
+                          text: { text: "357 Generation Road" },
+                        },
+                      },
+                    ],
+                  }
+                : {
+                    addressComponents: [
+                      { longText: "357", types: ["street_number"] },
+                      { longText: "Generation Road", types: ["route"] },
+                      {
+                        longText: "Georgia",
+                        shortText: "GA",
+                        types: ["administrative_area_level_1"],
+                      },
+                      { longText: "DD300", types: ["subpremise"] },
+                    ],
+                  },
+            ),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        return originalFetch(url, options);
+      };
+      try {
+        const token = randomUUID();
+        const suggestion = await owner.request("/addresses/suggest", {
+          method: "POST",
+          body: { input: "357 Gen", sessionToken: token },
+        });
+        assert.equal(suggestion.status, 200);
+        assert.equal(suggestion.data.suggestions[0].placeId, "place_123");
+        const details = await owner.request("/addresses/details", {
+          method: "POST",
+          body: { placeId: "place_123", sessionToken: token },
+        });
+        assert.equal(details.data.state, "GA");
+        assert.equal(details.data.unit, "DD300");
+        assert.equal(details.data.residentAddress, "357 Generation Road");
+        assert.equal(
+          (await e2Customer.request("/addresses/config")).status,
+          403,
+        );
+        assert.equal(calls, 2);
+      } finally {
+        globalThis.fetch = originalFetch;
+        env.GOOGLE_MAPS_API_KEY = key;
+      }
+    }
     console.log(
       "Verified authentication, permissions, persistence, cases, multi-invoice billing, chat, notifications, preferences and OAuth setup",
     );

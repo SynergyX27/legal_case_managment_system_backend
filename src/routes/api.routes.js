@@ -1,3 +1,8 @@
+import * as inbox from "../controllers/email-conversations.controller.js";
+import * as portfolios from "../controllers/workspaces.controller.js";
+import * as singleReport from "../controllers/single-case-report.controller.js";
+import * as addresses from "../controllers/addresses.controller.js";
+import * as company from "../controllers/company.controller.js";
 import * as caseImport from "../controllers/case-import.controller.js";
 import * as caseReports from "../controllers/case-reports.controller.js";
 import { nativeIdentity } from "../services/mobile-auth.service.js";
@@ -51,7 +56,33 @@ api.post("/mobile/auth/logout", mobile.logout);
 api.post("/mobile/integrations/dropbox/connect", mobile.dropboxConnect);
 api.post("/auth/logout", auth.logout);
 api.patch("/auth/profile", auth.profile);
+api.get("/email/recipients", inbox.recipients);
+api.get("/email/threads", inbox.list);
+api.get("/email/threads/:id", inbox.messages);
+api.post("/email/send", rateLimit({ windowMs: 60000, limit: 20 }), inbox.send);
+api.post("/email/threads/:id/read", inbox.read);
+api.get("/email/attachments/:id", inbox.attachment);
+api.get("/email/incoming/status", inbox.status);
+api.post("/email/incoming/retry-attachments", inbox.retryAttachments);
+api.post(
+  "/email/incoming/sync",
+  rateLimit({ windowMs: 60000, limit: 2 }),
+  inbox.sync,
+);
 api.get("/workspace", c.getWorkspace);
+api.get("/workspaces", portfolios.list);
+api.put("/workspaces/:id", portfolios.save);
+api.post("/workspaces/:id/archive", portfolios.archive);
+api.put("/workspace-access", portfolios.access);
+api.post("/workspaces/move-cases",portfolios.bulkAssign);
+api.patch("/cases/:id/workspace", portfolios.assign);
+api.get("/company/profile", company.get);
+api.patch("/company/profile", company.update);
+api.get("/company/profile/logo", company.logo);
+api.get("/addresses/config", addresses.config);
+const placesLimit = rateLimit({ windowMs: 60000, limit: 120 });
+api.post("/addresses/suggest", placesLimit, addresses.suggest);
+api.post("/addresses/details", placesLimit, addresses.details);
 api.get("/email/status", mail.emailStatus);
 const emailAdminLimit = rateLimit({
   windowMs: 60000,
@@ -96,6 +127,12 @@ api.post(
   caseReports.email,
 );
 api.patch("/cases/bulk", importLimit, caseImport.bulkUpdate);
+api.get("/cases/:id/report/pdf", importLimit, singleReport.pdf);
+api.post(
+  "/cases/:id/report/email",
+  rateLimit({ windowMs: 60000, limit: 5 }),
+  singleReport.email,
+);
 api.put("/cases/:id", c.putCase);
 api.delete("/cases/:id", c.deleteCase);
 api.post("/cases/:id/comments", c.comment);

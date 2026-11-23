@@ -58,19 +58,6 @@ export async function createUserRecord(input, actor = null) {
           [clientId],
         );
         assert(old.rowCount, 422, "Customer not found");
-        await db.query(
-          "UPDATE legalflow.clients SET data=data||$2::jsonb WHERE id=$1",
-          [
-            clientId,
-            JSON.stringify({
-              name: data.name,
-              company: data.name,
-              email: data.email,
-              phone: data.phone,
-              address: data.address,
-            }),
-          ],
-        );
       } else
         await db.query("INSERT INTO legalflow.clients(id,data) VALUES($1,$2)", [
           clientId,
@@ -101,6 +88,11 @@ export async function createUserRecord(input, actor = null) {
         data.role === "staff" ? data.managerId : null,
       ],
     );
+    if (data.role === "customer" && data.clientId)
+      await db.query(
+        "UPDATE legalflow.users SET customer_access='community' WHERE id=$1",
+        [id],
+      );
     await audit(db, actor, "user.created", id);
     return findUser(id, db);
   });
@@ -176,7 +168,16 @@ export async function profile(req, res) {
       "UPDATE legalflow.users SET name=$2,phone=$3,password_hash=COALESCE($4,password_hash),updated_at=now() WHERE id=$1",
       [req.user.id, v.name, v.phone, hash],
     );
-    if (req.user.client_id)
+    if (
+      req.user.client_id &&
+      req.user.customer_access === "all" &&
+      !(
+        await db.query(
+          "SELECT 1 FROM legalflow.users WHERE client_id=$1 AND id<>$2",
+          [req.user.client_id, req.user.id],
+        )
+      ).rowCount
+    )
       await db.query(
         "UPDATE legalflow.clients SET data=data||$2::jsonb WHERE id=$1",
         [

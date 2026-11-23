@@ -1,3 +1,4 @@
+import { emailMimeTypes } from "./email-conversations.service.js";
 import nodemailer from "nodemailer";
 import { randomUUID } from "node:crypto";
 import { env } from "../config/env.js";
@@ -66,7 +67,30 @@ export async function deliverEmailBatch({ send, limit = 5 } = {}) {
         subject: row.subject,
         text: row.text_body,
         html: row.html_body,
-        messageId: `<legalflow-${row.id}@${(env.MAIL_FROM || "notifications@legalflow.invalid").split("@").at(-1)}>`,
+        attachments: (row.attachments || [])
+          .filter(
+            (a) =>
+              emailMimeTypes.has(a.contentType) &&
+              typeof a.content === "string" &&
+              a.content.length <= 17000000,
+          )
+          .map((a) => ({
+            filename: String(a.filename).replace(/[\\/]/g, "_"),
+            content: Buffer.from(a.content, "base64"),
+            contentType: a.contentType,
+          })),
+        messageId:
+          row.mail_headers?.messageId ||
+          `<legalflow-${row.id}@${(env.MAIL_FROM || "notifications@legalflow.invalid").split("@").at(-1)}>`,
+        ...(row.mail_headers?.inReplyTo
+          ? {
+              inReplyTo: row.mail_headers.inReplyTo,
+              references: row.mail_headers.references,
+            }
+          : {}),
+        ...(row.mail_headers?.replyTo
+          ? { replyTo: row.mail_headers.replyTo }
+          : {}),
         disableFileAccess: true,
         disableUrlAccess: true,
       });

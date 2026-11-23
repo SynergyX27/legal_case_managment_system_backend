@@ -37,10 +37,13 @@ export const biller = (u) =>
     "Invoice permission required",
   );
 export const visible = (u, c) =>
+  !!c &&
   u?.status === "Active" &&
   (u.role === "owner" ||
     (u.role === "customer"
-      ? c.client_id === u.client_id
+      ? c.client_id === u.client_id &&
+        ((u.customer_access || "all") === "all" ||
+          (u.workspace_ids || []).includes(c.workspace_id))
       : u.role === "manager"
         ? c.manager_id === u.id
         : c.staff_id === u.id));
@@ -58,14 +61,23 @@ export const canMessage = (a, b, cases) =>
       const staff = customer === a ? b : a;
       return (
         internal(staff) &&
-        c.client_id === customer.client_id &&
+        visible(customer, c) &&
         (c.staff_id === staff.id || c.manager_id === staff.id)
       );
     }));
 export function caseScope(u, alias = "c") {
   if (u.role === "owner") return { sql: "TRUE", values: [] };
+  if (u.role === "customer")
+    return {
+      sql: `${alias}.client_id=$1 AND ($2::boolean OR ${alias}.workspace_id=ANY($3::text[]))`,
+      values: [
+        u.client_id,
+        (u.customer_access || "all") === "all",
+        u.workspace_ids || [],
+      ],
+    };
   return {
-    sql: `${alias}.${u.role === "customer" ? "client_id" : u.role === "manager" ? "manager_id" : "staff_id"}=$1`,
-    values: [u.role === "customer" ? u.client_id : u.id],
+    sql: `${alias}.${u.role === "manager" ? "manager_id" : "staff_id"}=$1`,
+    values: [u.id],
   };
 }

@@ -210,3 +210,37 @@ test("paid invoice balances count each invoice once, include tax and never go ne
     "Export/import preserves the original amount, avoiding a second payment deduction",
   );
 });
+
+test("E2 CSV fields retain rental date and typed property amounts", async () => {
+  const rows = await parseCaseFile({
+    originalname: "e2.csv",
+    buffer: Buffer.from(
+      "Case Number,Tenant,REF CL#,Attorney,Property type,Suite / Unit #,SF,Monthly rent,Last payment date,VIS - RI\nE2-IMPORT,Tenant,GA-CLIENT,Attorney,SFH,01,1821,1500.50,2026-04-18,Repair",
+    ),
+  });
+  const users = [
+    {
+      id: "staff",
+      role: "staff",
+      status: "Active",
+      name: "Staff",
+      manager_id: "manager",
+    },
+    { id: "manager", role: "manager", status: "Active", name: "Manager" },
+  ];
+  const [row] = prepareImport(
+    rows,
+    { clientId: "client", staffId: "staff" },
+    { role: "owner" },
+    [{ id: "client", name: "Customer" }],
+    users,
+    [],
+    [],
+  );
+  assert(row.case, JSON.stringify(row));
+  assert.equal(row.case.ref, "GA-CLIENT");
+  assert.equal(row.case.squareFeet, 1821);
+  assert.equal(row.case.monthlyRent, 1500.5);
+  assert.equal(row.case.unit, "01");
+  assert.equal(row.case.lastPaymentDate, "2026-04-18");
+});

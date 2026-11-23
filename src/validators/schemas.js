@@ -77,6 +77,21 @@ const date = z
   );
 const maybeDate = z.union([z.literal(""), date]).default("");
 export const caseInput = z.object({
+  workspaceId: z.string().max(100).optional(),
+  attorney: optional.optional(),
+  propertyType: z.enum(["", "SFH", "APT", "COM"]).optional(),
+  unit: optional.optional(),
+  squareFeet: z.number().finite().min(0).max(100000000).nullable().optional(),
+  monthlyRent: z
+    .number()
+    .finite()
+    .min(0)
+    .max(10000000)
+    .multipleOf(0.01)
+    .nullable()
+    .optional(),
+  lastPaymentDate: maybeDate.optional(),
+  visRI: optional.optional(),
   id,
   number: short.min(1),
   title: short.min(1),

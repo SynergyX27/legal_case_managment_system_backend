@@ -9,6 +9,16 @@ if (process.env.NODE_ENV !== "test")
   });
 import { z } from "zod";
 const schema = z.object({
+  IMAP_ENABLED: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((v) => v === "true"),
+  IMAP_HOST: z.string().default("imap.gmail.com"),
+  IMAP_PORT: z.coerce.number().int().min(1).max(65535).default(993),
+  IMAP_USER: z.string().default(""),
+  IMAP_PASSWORD: z.string().default(""),
+  IMAP_POLL_SECONDS: z.coerce.number().int().min(30).max(3600).default(60),
+
   SMTP_ENABLED: z
     .enum(["true", "false"])
     .default("false")
@@ -43,6 +53,7 @@ const schema = z.object({
   STRIPE_WEBHOOK_SECRET: z
     .union([z.literal(""), z.string().startsWith("whsec_")])
     .default(""),
+  GOOGLE_MAPS_API_KEY: z.string().trim().default(""),
   DROPBOX_APP_KEY: z.string().default(""),
   DROPBOX_APP_SECRET: z.string().default(""),
   DROPBOX_REFRESH_TOKEN: z.string().default(""),
@@ -71,3 +82,8 @@ if (
   );
 if (env.SMTP_ENABLED && env.SMTP_PORT === 465 && !env.SMTP_SECURE)
   throw new Error("SMTP port 465 requires SMTP_SECURE=true");
+
+if (env.IMAP_ENABLED && (!env.IMAP_USER || !env.IMAP_PASSWORD))
+  throw new Error(
+    "Set IMAP_USER and IMAP_PASSWORD before enabling incoming email",
+  );

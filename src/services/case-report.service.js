@@ -35,6 +35,10 @@ export function selectReportCases(cases, filters = {}, userId = "") {
           c.lbx,
           c.number,
           c.ref,
+          c.refId,
+          c.attorney,
+          c.unit,
+          c.visRI,
           c.title,
           c.residentName,
           c.residentAddress,
@@ -87,5 +91,5 @@ export function caseReportHtml(cases, filters, statuses) {
       .filter(([, v]) => (Array.isArray(v) ? v.length : !!v))
       .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(", ") : v}`)
       .join(" · ") || "All accessible cases";
-  return `<h1>Case files report</h1><p>${escapeHtml(criteria)}</p><p>${cases.length} cases · Generated ${escapeHtml(new Date().toISOString())}</p><p>Original amount ${money(totals.owed)} · Paid amount ${money(totalPaid)} · Owed amount ${money(totals.due)}</p><p>${statuses.map((status) => escapeHtml(status) + ": " + (status === "All cases" ? cases.length : cases.filter((c) => c.status === status).length)).join(" · ")}</p>${cases.some((c) => c.status === "Completed") ? "<p>Completed cases are treated as fully cleared. Paid amount shows recorded invoice payments.</p>" : ""}<table border="1" cellpadding="6" cellspacing="0"><thead><tr>${["Case number", "Community", "Neighborhood", "Plaintiff", "Tenant", "Address", "County", "City", "State", "Status", "Original amount", "Paid amount", "Owed amount"].map((h) => "<th>" + h + "</th>").join("")}</tr></thead><tbody>${cases.map((c) => "<tr>" + [c.number, c.community, c.neighborhood, c.plaintiff, c.residentName, c.residentAddress, c.county, c.city, c.state, c.status, money(caseAmounts(c).original), money(caseAmounts(c).paid), money(caseAmounts(c).due)].map((v) => "<td>" + escapeHtml(v) + "</td>").join("") + "</tr>").join("")}</tbody></table>`;
+  return `<h1>Case files report</h1><p>${escapeHtml(criteria)}</p><p>${cases.length} cases · Generated ${escapeHtml(new Date().toISOString())}</p><p>Original amount ${money(totals.owed)} · Paid amount ${money(totalPaid)} · Owed amount ${money(totals.due)}</p><p>${statuses.map((status) => escapeHtml(status) + ": " + (status === "All cases" ? cases.length : cases.filter((c) => c.status === status).length)).join(" · ")}</p>${cases.some((c) => c.status === "Completed") ? "<p>Completed cases are treated as fully cleared. Paid amount shows recorded invoice payments.</p>" : ""}<table border="1" cellpadding="6" cellspacing="0"><thead><tr>${["Case number", "REF CL#", "REF ID#", "Attorney", "Property type", "Suite / Unit #", "SF", "Monthly rent", "Last rental payment date", "VIS - RI", "Community", "Neighborhood", "Plaintiff", "Tenant", "Address", "County", "City", "State", "Status", "Original amount", "Paid amount", "Owed amount"].map((h) => "<th>" + h + "</th>").join("")}</tr></thead><tbody>${cases.map((c) => "<tr>" + [c.number, c.ref, c.refId, c.attorney, c.propertyType, c.unit, c.squareFeet, c.monthlyRent == null ? "" : money(c.monthlyRent), c.lastPaymentDate, c.visRI, c.community, c.neighborhood, c.plaintiff, c.residentName, c.residentAddress, c.county, c.city, c.state, c.status, money(caseAmounts(c).original), money(caseAmounts(c).paid), money(caseAmounts(c).due)].map((v) => "<td>" + escapeHtml(v) + "</td>").join("") + "</tr>").join("")}</tbody></table>`;
 }

@@ -1,3 +1,5 @@
+import { findUser } from "../models/user.model.js";
+import { visible } from "./access.service.js";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { env } from "../config/env.js";
@@ -55,13 +57,28 @@ async function enqueue(db, eventKey, recipient, content) {
     [randomUUID(), eventKey, email, content.title, body.text, body.html],
   );
 }
-async function client(db, id) {
-  return (
+async function client(db, id, caseId) {
+  const data = (
     await db.query("SELECT data FROM legalflow.clients WHERE id=$1", [id])
   ).rows[0]?.data;
+  if (!data) return null;
+  const rows = (
+    await db.query(
+      "SELECT id FROM legalflow.users WHERE client_id=$1 AND lower(email)=lower($2)",
+      [id, data.email || ""],
+    )
+  ).rows;
+  if (rows.length && caseId) {
+    const u = await findUser(rows[0].id, db),
+      c = (
+        await db.query("SELECT * FROM legalflow.cases WHERE id=$1", [caseId])
+      ).rows[0];
+    if (!visible(u, c)) return null;
+  }
+  return data;
 }
 export async function queueCaseOpened(db, c) {
-  const recipient = await client(db, c.clientId);
+  const recipient = await client(db, c.clientId, c.id);
   if (!recipient) return;
   await enqueue(db, `case.created:${c.id}`, recipient, {
     title: `Case ${c.number} opened`,
@@ -75,7 +92,7 @@ export async function queueCaseOpened(db, c) {
   });
 }
 export async function queueInvoiceIssued(db, invoice) {
-  const recipient = await client(db, invoice.clientId);
+  const recipient = await client(db, invoice.clientId, invoice.caseId);
   if (!recipient) return;
   await enqueue(db, `invoice.issued:${invoice.id}`, recipient, {
     title: `Invoice ${invoice.number} issued`,
@@ -99,7 +116,7 @@ export async function queuePaymentCompleted(db, invoice, method) {
       [invoice.caseId],
     )
   ).rows[0];
-  const recipient = await client(db, invoice.clientId);
+  const recipient = await client(db, invoice.clientId, invoice.caseId);
   const details = [
     ["Invoice", invoice.number],
     ["Case", c?.number || ""],
