@@ -46,6 +46,13 @@ ALTER TABLE legalflow.email_outbox ADD COLUMN mail_headers jsonb NOT NULL DEFAUL
 INSERT INTO legalflow.migrations(name) VALUES('007_workspaces_and_email.sql');
 END IF;
 END $combined_update$;
+DO $user_deletion$
+BEGIN
+ IF NOT EXISTS (SELECT 1 FROM legalflow.migrations WHERE name='008_user_deletion.sql') THEN
+ ALTER TABLE legalflow.users ADD COLUMN IF NOT EXISTS deleted_at timestamptz;
+ INSERT INTO legalflow.migrations(name) VALUES('008_user_deletion.sql');
+ END IF;
+END $user_deletion$;
 COMMIT;
 SELECT name FROM legalflow.migrations WHERE name IN('006_case_property_and_branding.sql','007_workspaces_and_email.sql') ORDER BY name;
 SELECT to_regclass('legalflow.workspaces') AS workspaces,to_regclass('legalflow.email_threads') AS email_threads,to_regclass('legalflow.case_ref_numbers') AS reference_sequence;

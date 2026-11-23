@@ -116,7 +116,7 @@ export async function saveCase(db, user, input, metadata = {}) {
   );
   await audit(db, req.user, old ? "case.updated" : "case.created", v.id);
   const customer = await db.query(
-    "SELECT id FROM legalflow.users WHERE client_id=$1",
+    "SELECT id FROM legalflow.users WHERE client_id=$1 AND deleted_at IS NULL",
     [v.clientId],
   );
   const customerUsers = [];

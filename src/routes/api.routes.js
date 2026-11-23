@@ -100,6 +100,7 @@ api.post("/invoices/:id/payment-status", payments.status);
 api.post("/users", c.createUser);
 api.put("/permissions/:role", c.updatePermissions);
 api.patch("/users/:id/access", c.updateUser);
+api.delete("/users/:id", c.deleteUser);
 const importUpload = multer({
   storage: multer.memoryStorage(),
   limits: {

@@ -88,7 +88,7 @@ export async function putInvoice(req, res) {
     await audit(db, req.user, "invoice.saved", v.id);
     if (v.status !== "Draft") {
       const recipients = (
-        await db.query("SELECT id FROM legalflow.users WHERE client_id=$1", [
+        await db.query("SELECT id FROM legalflow.users WHERE client_id=$1 AND deleted_at IS NULL", [
           v.clientId,
         ])
       ).rows;

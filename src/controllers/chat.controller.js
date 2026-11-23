@@ -53,6 +53,7 @@ async function authorizeConversation(req, db) {
     members.find((u) => u.id !== req.user.id).id,
     db,
   );
+  assert(other, 404, "This conversation participant has been deleted");
   const cases = (
     await db.query(
       "SELECT client_id,staff_id,manager_id,workspace_id FROM legalflow.cases WHERE client_id=$1 OR client_id=$2",

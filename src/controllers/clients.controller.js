@@ -24,13 +24,13 @@ export async function putClient(req, res) {
     ]);
     if (
       (
-        await db.query("SELECT id FROM legalflow.users WHERE client_id=$1", [
+        await db.query("SELECT id FROM legalflow.users WHERE client_id=$1 AND deleted_at IS NULL", [
           v.id,
         ])
       ).rowCount === 1
     )
       await db.query(
-        "UPDATE legalflow.users SET name=$2,email=$3,phone=$4,updated_at=now() WHERE client_id=$1",
+        "UPDATE legalflow.users SET name=$2,email=$3,phone=$4,updated_at=now() WHERE client_id=$1 AND deleted_at IS NULL",
         [v.id, v.name, v.email.toLowerCase(), v.phone],
       );
     await audit(db, req.user, "customer.updated", v.id);
@@ -41,7 +41,7 @@ export async function deleteClient(req, res) {
   owner(req.user);
   await transaction(async (db) => {
     const linked = (
-      await db.query("SELECT id FROM legalflow.users WHERE client_id=$1", [
+      await db.query("SELECT id FROM legalflow.users WHERE client_id=$1 AND deleted_at IS NULL", [
         req.params.id,
       ])
     ).rows[0];

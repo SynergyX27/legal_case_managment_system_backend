@@ -573,6 +573,32 @@ test("Workspace hierarchy, customer account isolation, owner-only moves and dura
       4,
       "Deleting empty groups must not delete cases",
     );
+    // Deletion applies to every role and revokes all sessions without deleting history.
+    const remove = async (who, request = own) => request(`/users/${who.id}`, "DELETE", {updatedAt:(await findUser(who.id)).updated_at.toISOString()});
+    assert.equal((await remove(staff, worker)).status,403);
+    assert.equal((await remove(owner)).status,422);
+    assert.equal((await remove(staff)).status,409);
+    assert.equal((await remove(manager)).status,409);
+    assert.equal((await remove(primary)).status,409);
+    const emptyManager = await user("delete-manager", "manager", owner);
+    const emptyStaff = await user("delete-staff", "staff", owner, {managerId:emptyManager.id});
+    const emptyOwner = await user("delete-owner", "owner", owner);
+    const emptyCustomer = await user("delete-customer", "customer", owner);
+    const emptyCustomerSession = await client("delete-customer");
+    assert.equal((await remove(emptyManager)).status,409, "Manager must reassign staff even without cases");
+    assert.equal((await own(`/users/${emptyStaff.id}`, "DELETE", {updatedAt:"2000-01-01T00:00:00Z"})).status,409);
+    assert.equal((await remove(emptyStaff)).status,200);
+    assert.equal(await findUser(emptyStaff.id), undefined);
+    assert.equal((await remove(emptyManager)).status,200);
+    assert.equal((await remove(emptyOwner)).status,200);
+    assert.equal((await remove(emptyCustomer)).status,200);
+    assert.equal((await emptyCustomerSession("/workspace")).status,401);
+    const deletedLogin = await fetch(base + "/mobile/auth/login", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({identity:"delete-customer",password:"Workspace-test-password-123"})});
+    assert.equal(deletedLogin.status,401);
+    const {workspace} = await import("../src/models/workspace.model.js");
+    const afterDelete = await workspace(await findUser(owner.id));
+    assert(!afterDelete.users.some(u => [emptyOwner.id,emptyCustomer.id,emptyStaff.id,emptyManager.id].includes(u.id)));
+    assert.equal((await pool.query("SELECT count(*)::int AS n FROM legalflow.cases")).rows[0].n,4);
     env.IMAP_ENABLED = false;
     env.SMTP_ENABLED = false;
   } finally {

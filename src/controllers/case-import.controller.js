@@ -41,7 +41,7 @@ export async function preview(req, res) {
   const [clients, users, numbers, fields] = await Promise.all([
     pool.query("SELECT id,data FROM legalflow.clients"),
     pool.query(
-      "SELECT id,name,email,username,role,status,manager_id,client_id FROM legalflow.users",
+      "SELECT id,name,email,username,role,status,manager_id,client_id FROM legalflow.users WHERE deleted_at IS NULL",
     ),
     pool.query("SELECT number FROM legalflow.cases"),
     pool.query("SELECT data FROM legalflow.custom_fields"),

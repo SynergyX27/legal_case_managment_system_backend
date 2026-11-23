@@ -173,7 +173,7 @@ export async function profile(req, res) {
       req.user.customer_access === "all" &&
       !(
         await db.query(
-          "SELECT 1 FROM legalflow.users WHERE client_id=$1 AND id<>$2",
+          "SELECT 1 FROM legalflow.users WHERE client_id=$1 AND deleted_at IS NULL AND id<>$2",
           [req.user.client_id, req.user.id],
         )
       ).rowCount

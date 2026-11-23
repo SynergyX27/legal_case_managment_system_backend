@@ -120,7 +120,7 @@ export async function updateUser(req, res) {
     // separate personal contact details; edit the company contact in Customers.
     if (old.client_id && (v.email !== undefined || v.phone !== undefined)) {
       await db.query("SELECT id FROM legalflow.clients WHERE id=$1 FOR UPDATE", [old.client_id]);
-      if ((await db.query("SELECT id FROM legalflow.users WHERE client_id=$1", [old.client_id])).rowCount === 1)
+      if ((await db.query("SELECT id FROM legalflow.users WHERE client_id=$1 AND deleted_at IS NULL", [old.client_id])).rowCount === 1)
         await db.query("UPDATE legalflow.clients SET data=data || jsonb_build_object('email',$2::text,'phone',$3::text) WHERE id=$1", [old.client_id, email, phone]);
       else
         await db.query("UPDATE legalflow.clients SET data=data || CASE WHEN lower(data->>'email')=lower($2) THEN jsonb_build_object('email',$3::text,'phone',$4::text) ELSE '{}'::jsonb END WHERE id=$1", [old.client_id, old.email, email, phone]);
@@ -145,4 +145,36 @@ export async function updateUser(req, res) {
     await audit(db, req.user, "user.access-updated", id);
   });
   res.json({ ok: true });
+}
+
+export async function deleteUser(req, res) {
+  owner(req.user);
+  const id = schema.id.parse(req.params.id);
+  const version = schema.accessInput.shape.updatedAt.parse(req.body?.updatedAt);
+  await transaction(async (db) => {
+    await db.query("SELECT pg_advisory_xact_lock(hashtext('legalflow-user-access'))");
+    const actor = await findUser(req.user.id, db);
+    assert(actor?.role === "owner" && actor.status === "Active", 403, "Owner access required");
+    const old = await findUser(id, db);
+    assert(old, 404, "User not found");
+    assert(id !== actor.id, 422, "You cannot delete your own account");
+    // Prevent concurrent assignments while checking and deleting this login.
+    await db.query("SELECT id FROM legalflow.users WHERE id=$1 FOR UPDATE", [id]);
+    assert(version && new Date(version).getTime() === old.updated_at.getTime(), 409,
+      "User changed on another device. Reopen their details before deleting");
+    if (old.role === "owner" && old.status === "Active")
+      assert((await db.query("SELECT 1 FROM legalflow.users WHERE role='owner' AND status='Active' AND deleted_at IS NULL AND id<>$1", [id])).rowCount,
+        409, "Keep at least one active owner");
+    assert(!(await db.query("SELECT 1 FROM legalflow.cases WHERE staff_id=$1 OR manager_id=$1 OR ($2::text IS NOT NULL AND client_id=$2) LIMIT 1", [id, old.client_id])).rowCount,
+      409, "This user has assigned cases. Reassign or remove those cases before deleting the account. Customer logins are linked through their customer company");
+    assert(!(await db.query("SELECT 1 FROM legalflow.users WHERE manager_id=$1 AND deleted_at IS NULL LIMIT 1", [id])).rowCount,
+      409, "Reassign this manager's staff before deleting their account");
+    await db.query("UPDATE legalflow.users SET status='Inactive',deleted_at=now(),updated_at=now() WHERE id=$1", [id]);
+    await db.query("DELETE FROM legalflow.sessions WHERE sess->>'userId'=$1", [id]);
+    await db.query("DELETE FROM legalflow.mobile_sessions WHERE user_id=$1", [id]);
+    await db.query("DELETE FROM legalflow.workspace_members WHERE user_id=$1", [id]);
+    await db.query("DELETE FROM legalflow.notifications WHERE user_id=$1", [id]);
+    await audit(db, actor, "user.deleted", id);
+  });
+  res.json({ok: true});
 }
