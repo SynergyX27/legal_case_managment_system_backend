@@ -1,3 +1,4 @@
+import { issueInvoiceLink } from "../services/public-invoice.service.js";
 import { z } from "zod";
 import { randomUUID } from "node:crypto";
 import { invoicePdf, invoiceForUser } from "../services/invoice-pdf.service.js";
@@ -79,19 +80,16 @@ export async function email(req, res) {
       "Customer main login must have access to every included case before receiving this invoice",
     );
   }
-  const url = new URL(
-    `/invoices?invoiceId=${encodeURIComponent(i.id)}`,
-    env.APP_ORIGIN,
-  ).href;
+  const { url } = await issueInvoiceLink(pool, i.id, req.user.id);
   const text = [
     v.message ||
       (v.mode === "payment"
-        ? "Please sign in to pay your invoice securely."
+        ? "Please open your invoice to pay securely online."
         : "Your invoice is attached."),
     "",
     `Invoice: ${i.number}`,
     url,
-    "Sign in to LegalFlow to view and pay.",
+    "Open your private invoice link to view, download or pay. No sign-in is required.",
   ].join("\n");
   const attachments = [];
   if (v.mode === "invoice") {
@@ -115,7 +113,7 @@ export async function email(req, res) {
       z.string().email().parse(customer.email),
       `Invoice ${i.number}`,
       text,
-      "<p>" +
+      `<p>Your invoice is ready. <a href="${url.replaceAll("&", "&amp;")}">View invoice and pay online</a></p><p>` +
         text
           .replace(
             /[&<>"']/g,

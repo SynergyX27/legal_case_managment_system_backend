@@ -1,3 +1,4 @@
+import * as publicInvoice from "../controllers/public-invoice.controller.js";
 import * as invoicePicker from "../controllers/invoice-picker.controller.js";
 import * as invoiceDelivery from "../controllers/invoice-delivery.controller.js";
 import * as inbox from "../controllers/email-conversations.controller.js";
@@ -40,6 +41,24 @@ api.post(
 );
 api.get("/mobile/payments/return", mobile.paymentReturn);
 api.get("/integrations/dropbox/callback", mobile.dropboxCallback);
+const publicLimit = rateLimit({
+  windowMs: 60000,
+  limit: 90,
+  standardHeaders: "draft-8",
+  legacyHeaders: false,
+});
+const publicPayLimit = rateLimit({
+  windowMs: 60000,
+  limit: 8,
+  standardHeaders: "draft-8",
+  legacyHeaders: false,
+});
+api.use("/public/invoices", publicInvoice.privateResponse, publicLimit);
+api.post("/public/invoices/view", publicInvoice.view);
+api.post("/public/invoices/logo", publicInvoice.logo);
+api.post("/public/invoices/pdf", rateLimit({windowMs:60000,limit:8,standardHeaders:"draft-8",legacyHeaders:false}), publicInvoice.pdf);
+api.post("/public/invoices/status", publicInvoice.status);
+api.post("/public/invoices/checkout", publicPayLimit, publicInvoice.checkout);
 api.use(nativeIdentity);
 api.get("/auth/session", auth.session);
 api.use(csrf);
@@ -143,6 +162,8 @@ api.delete("/cases/:id", c.deleteCase);
 api.post("/cases/:id/comments", c.comment);
 api.put("/clients/:id", c.putClient);
 api.delete("/clients/:id", c.deleteClient);
+api.post("/invoices/:id/public-link", publicInvoice.link);
+api.delete("/invoices/:id/public-links", publicInvoice.revoke);
 api.get("/invoices/:id/pdf", invoiceDelivery.pdf);
 api.post("/invoices/:id/email", invoiceDelivery.email);
 api.get("/cases/:id/invoices/pdf", invoiceDelivery.bundle);

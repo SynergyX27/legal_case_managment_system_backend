@@ -8,6 +8,13 @@ import { invoiceCaseIds, invoiceTotals } from "./invoice-math.service.js";
 import { assert } from "../utils/errors.js";
 import { profile } from "../controllers/company.controller.js";
 import { env } from "../config/env.js";
+const invoiceDate = (v) =>
+  v
+    ? new Date(v.length === 10 ? v + "T12:00:00Z" : v).toLocaleDateString(
+        "en-US",
+        { month: "2-digit", day: "2-digit", year: "numeric", timeZone: "UTC" },
+      )
+    : "—";
 const dollars = (n) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(
     n / 100,
@@ -92,154 +99,220 @@ export async function renderInvoicePdf(records, company) {
     doc.on("end", () => resolve(Buffer.concat(chunks)));
     doc.on("error", reject);
   });
+  const ink = "#172b46",
+    muted = "#748399",
+    line = "#e4eaf2",
+    blue = "#315fba";
+  const text = (v, x, y, w = 510, size = 9, options = {}) =>
+    doc
+      .font("Regular")
+      .fontSize(size)
+      .fillColor(ink)
+      .text(String(v ?? ""), x, y, { width: w, ...options });
+  const label = (v, x, y, w = 210) =>
+    doc
+      .font("Bold")
+      .fontSize(8)
+      .fillColor(muted)
+      .text(v, x, y, { width: w, characterSpacing: 0.5 });
   for (const { invoice: i, cases, customer } of records) {
     doc.addPage();
     const t = invoiceTotals(i),
+      paid = i.status === "Paid",
       template =
         i.template || (cases[0]?.data.propertyType === "APT" ? "T2A" : "T1");
-    const text = (v, x, y, w = 510, size = 10) =>
-      doc
-        .font("Regular")
-        .fontSize(size)
-        .fillColor("#243750")
-        .text(String(v ?? ""), x, y, { width: w });
-    doc.rect(0, 0, 596, 112).fill("#17345b");
-    if (logo) doc.image(logo, 42, 23, { fit: [58, 58] });
+    let brandX = 42;
+    if (logo) {
+      doc.image(logo, 42, 38, { fit: [42, 42] });
+      brandX = 96;
+    }
+    let nameSize = 18;
     doc.font("Bold");
-    let companyFont = 22;
-    const companyWidth = logo ? 210 : 290;
     while (
-      companyFont > 9 &&
+      nameSize > 9 &&
       doc
-        .fontSize(companyFont)
+        .fontSize(nameSize)
         .heightOfString(company.companyName || "LegalFlow", {
-          width: companyWidth,
-        }) > 65
+          width: 245 - (brandX - 42),
+        }) > 45
     )
-      companyFont--;
+      nameSize--;
     doc
-      .fontSize(companyFont)
-      .fillColor("white")
-      .text(company.companyName || "LegalFlow", logo ? 112 : 42, 30, {
-        width: companyWidth,
+      .fontSize(nameSize)
+      .fillColor(ink)
+      .text(company.companyName || "LegalFlow", brandX, 42, {
+        width: 245 - (brandX - 42),
       });
+    label("SERVICE INVOICE", brandX, 93);
     doc
-      .fontSize(11)
-      .text(`INVOICE  /  ${template}`, 370, 32, { width: 180, align: "right" });
+      .font("Bold")
+      .fontSize(24)
+      .fillColor(ink)
+      .text("INVOICE", 340, 38, { width: 212, align: "right" });
+    text(i.number, 300, 74, 252, 9, { align: "right" });
+    doc.roundedRect(458, 99, 94, 23, 6).fill(paid ? "#e5f4ed" : "#fff4d8");
     doc
-      .font("Regular")
-      .fontSize(9)
-      .text(i.number, 300, 58, { width: 250, align: "right" });
-    doc.text(i.status, 370, 78, { width: 180, align: "right" });
-    text(
-      [company.address, company.email, company.phone]
-        .filter(Boolean)
-        .join(" | "),
-      42,
-      125,
-      510,
-      9,
-    );
-    text("BILL TO", 42, 163, 250, 9);
-    text(customer.company || customer.name, 42, 181, 245, 12);
-    text(
-      [customer.name, customer.address, customer.email]
-        .filter(Boolean)
-        .join("\n"),
-      42,
-      202,
-      245,
-      9,
-    );
-    text(
-      `Issued: ${i.date}\nDue: ${i.dueDate}\nCurrency: USD`,
-      330,
-      181,
-      220,
-      10,
-    );
-    let y = Math.max(267, doc.y + 24);
+      .font("Bold")
+      .fontSize(8)
+      .fillColor(paid ? "#21845a" : "#966d12")
+      .text(paid ? "PAID" : i.status.toUpperCase(), 462, 106, {
+        width: 86,
+        align: "center",
+      });
+    doc.moveTo(42, 137).lineTo(552, 137).strokeColor(line).stroke();
+    label("FROM", 42, 155);
+    label("BILL TO", 310, 155);
+    const from = [
+      company.companyName,
+      company.address,
+      company.email,
+      company.phone,
+    ]
+      .filter(Boolean)
+      .join("\n");
+    const to = [
+      customer.company || customer.name,
+      customer.company && customer.name !== customer.company
+        ? customer.name
+        : "",
+      customer.address,
+      customer.email,
+      customer.phone,
+    ]
+      .filter(Boolean)
+      .join("\n");
+    text(from, 42, 173, 220, 9);
+    const fromEnd = doc.y;
+    text(to, 310, 173, 242, 9);
+    let y = Math.max(fromEnd, doc.y) + 25;
+    label("INVOICE DATE", 42, y, 150);
+    label("DUE DATE", 215, y, 150);
+    label("TEMPLATE / CURRENCY", 390, y, 162);
+    text(invoiceDate(i.date), 42, y + 17, 150, 10);
+    text(invoiceDate(i.dueDate), 215, y + 17, 150, 10);
+    text(`${template} / USD`, 390, y + 17, 162, 10);
+    y += 54;
     const header = () => {
-      doc.rect(42, y, 510, 24).fill("#e7edf6");
-      text("CASE / SERVICE DETAILS", 50, y + 8, 280, 9);
-      text("DATA", 340, y + 8, 70, 9);
-      text("AMOUNT", 448, y + 8, 95, 9);
-      y += 32;
+      doc.rect(42, y, 510, 27).fill("#f3f6fb");
+      label("#", 51, y + 10, 25);
+      label("SERVICE DETAILS", 82, y + 10, 262);
+      label("QTY", 352, y + 10, 40);
+      label("UNIT PRICE", 398, y + 10, 72);
+      label("AMOUNT", 484, y + 10, 65);
+      y += 37;
     };
     header();
-    for (const l of i.lines) {
-      const id = l.caseId || i.caseId;
-      const live = cases.find((c) => c.id === id);
+    for (let n = 0; n < i.lines.length; n++) {
+      const l = i.lines[n],
+        id = l.caseId || i.caseId,
+        live = cases.find((c) => c.id === id);
       const c = i.caseSnapshots?.find((c) => c.id === id) || {
         number: live?.number,
         ...live?.data,
         tenant: live?.data.residentName,
         address: live?.data.residentAddress,
       };
-      const detail = [
-        l.description,
-        `DATE: ${c.serviceDate || "-"}`,
-        `CAS #: ${c.refId || "-"} | Case: ${c.number || "-"}`,
-        `TENANT: ${c.tenant || "-"}`,
-        `UNIT: ${c.unit || "-"} | STATUS: ${l.serviceOutcome || "Not recorded"}`,
-        c.address || "",
-      ].join("\n");
-      const h = Math.max(
-        96,
-        doc.fontSize(9).heightOfString(detail, { width: 275 }) + 20,
-      );
-      if (y + h > 700) {
+      const details = [
+        `CAS # ${c.refId || "-"}  /  Case ${c.number || "-"}`,
+        c.tenant || "",
+        `${c.address || ""}${c.unit ? " / Unit " + c.unit : ""}`,
+        `Service: ${invoiceDate(c.serviceDate)}  /  ${l.serviceOutcome || "Outcome not recorded"}`,
+      ]
+        .filter(Boolean)
+        .join("\n");
+      const titleH = doc
+        .font("Bold")
+        .fontSize(9)
+        .heightOfString(l.description, { width: 255 });
+      const detailH = doc
+        .font("Regular")
+        .fontSize(8)
+        .heightOfString(details, { width: 255 });
+      const h = Math.max(72, titleH + detailH + 32);
+      if (y + h > 715) {
         doc.addPage();
-        y = 45;
+        label(`${i.number} / CONTINUED`, 42, 38, 510);
+        y = 63;
         header();
       }
-      text(detail, 50, y, 275, 9);
-      const url = new URL(`/cases/${encodeURIComponent(id)}`, env.APP_ORIGIN)
-        .href;
+      text(String(n + 1).padStart(2, "0"), 51, y, 25, 9);
       doc
-        .fontSize(10)
-        .fillColor("#295bb3")
-        .text("VIS: case visuals", 340, y, {
-          width: 95,
-          link: url,
-          underline: true,
-        });
-      text(
-        `${l.qty} x ${dollars(Math.round(l.price * 100))}\n${dollars(Math.round(l.qty * l.price * 100))}`,
-        442,
-        y,
-        105,
-        10,
-      );
+        .font("Bold")
+        .fontSize(9)
+        .fillColor(ink)
+        .text(l.description, 82, y, { width: 255 });
+      doc
+        .font("Regular")
+        .fontSize(8)
+        .fillColor(muted)
+        .text(details, 82, y + titleH + 5, { width: 255 });
+      doc
+        .fontSize(7)
+        .fillColor(blue)
+        .text(
+          "DATA / VIS - view in case portal",
+          82,
+          y + titleH + detailH + 9,
+          {
+            width: 255,
+            link: new URL(`/cases/${encodeURIComponent(id)}`, env.APP_ORIGIN)
+              .href,
+            underline: true,
+          },
+        );
+      text(l.qty, 346, y, 42, 9, { align: "center" });
+      text(dollars(Math.round(l.price * 100)), 390, y, 78, 9, {
+        align: "right",
+      });
+      text(dollars(Math.round(l.qty * l.price * 100)), 474, y, 78, 9, {
+        align: "right",
+      });
       y += h;
       doc
-        .moveTo(42, y - 8)
-        .lineTo(552, y - 8)
-        .strokeColor("#dce4ef")
+        .moveTo(42, y - 7)
+        .lineTo(552, y - 7)
+        .strokeColor(line)
         .stroke();
     }
-    if (y + 150 > 755) {
-      doc.addPage();
-      y = 45;
-    }
-    for (const [label, value] of [
+    const summaries = [
       ["Base price", t.base],
       ["Discount", -t.discount],
       ["Amount", t.net],
       [`Tax (${i.taxRate}%)`, t.tax],
-      ["Total due", t.total],
-    ]) {
-      text(label, 330, y, 125, 11);
-      text(dollars(value), 450, y, 100, 11);
-      y += 24;
+      ["Invoice total", t.total],
+      [paid ? "Amount paid" : "Balance due", paid ? t.total : t.total],
+    ];
+    if (y + summaries.length * 22 + 8 + (paid ? 22 : 0) + 62 > 790) {
+      doc.addPage();
+      label(`${i.number} / TOTALS`, 42, 40, 510);
+      y = 75;
     }
-    text(
-      "VIS links require LegalFlow sign-in and case access. Service outcome is separate from invoice payment status.",
-      42,
-      Math.min(y + 15, 785),
-      510,
-      8,
-    );
+    y += 8;
+    for (let n = 0; n < summaries.length; n++) {
+      const [name, value] = summaries[n];
+      if (n === summaries.length - 1) {
+        doc
+          .roundedRect(315, y - 6, 237, 30, 5)
+          .fill(paid ? "#eaf6ef" : "#eef3fc");
+      }
+      text(name, 327, y, 135, 9);
+      text(dollars(value), 465, y, 76, 9, { align: "right" });
+      y += 22;
+    }
+    if (paid) {
+      text("Balance due", 327, y, 135, 9);
+      text(dollars(0), 465, y, 76, 9, { align: "right" });
+      y += 22;
+    }
+    const note = paid
+      ? "Thank you. Payment has been received for this invoice."
+      : "Thank you for your business. Please use the private invoice link in your email to pay securely online.";
+    if (y + 62 > 790) {
+      doc.addPage();
+      y = 55;
+    }
+    doc.roundedRect(42, y + 8, 510, 42, 5).fill("#f5f7fa");
+    text(note, 55, y + 20, 484, 8);
   }
   const pages = doc.bufferedPageRange();
   for (let n = 0; n < pages.count; n++) {

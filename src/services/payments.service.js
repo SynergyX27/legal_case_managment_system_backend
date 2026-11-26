@@ -1,3 +1,4 @@
+import { publicInvoice } from "./public-invoice.service.js";
 import { invoiceTotals, invoiceCaseIds } from "./invoice-math.service.js";
 import { queuePaymentCompleted } from "./email-events.service.js";
 import { can } from "./access.service.js";
@@ -53,8 +54,26 @@ async function authorizedInvoice(user, id, db = pool, lock = false) {
   ).rows[0];
   assert(row, 404, "Invoice not found");
   assert(!row.deleted_at, 404, "Invoice not found");
-  for (const id of invoiceCaseIds({ ...row.data, caseId: row.case_id }))
-    await accessibleCase(user, id, db);
+  if (user.publicInvoiceId) {
+    assert(
+      user.publicInvoiceId === id && user.client_id === row.client_id,
+      404,
+      "Invoice not found",
+    );
+    assert(
+      (
+        await db.query(
+          "SELECT 1 FROM legalflow.invoice_public_links WHERE token_hash=$1 AND invoice_id=$2 AND revoked_at IS NULL AND expires_at>now()",
+          [user.publicTokenHash, id],
+        )
+      ).rowCount,
+      404,
+      "Invoice link expired or disabled",
+    );
+  } else {
+    for (const id of invoiceCaseIds({ ...row.data, caseId: row.case_id }))
+      await accessibleCase(user, id, db);
+  }
   assert(
     [
       "invoices.view",
@@ -113,8 +132,12 @@ async function reservePayment(user, invoiceId) {
       payment_intent_data: {
         metadata: { invoiceId: invoice.id, paymentId: id },
       },
-      success_url: `${env.APP_ORIGIN}${user.mobileReturn ? "/api/mobile/payments/return" : "/invoices"}?payment=success&invoiceId=${encodeURIComponent(invoice.id)}`,
-      cancel_url: `${env.APP_ORIGIN}${user.mobileReturn ? "/api/mobile/payments/return" : "/invoices"}?payment=cancelled&invoiceId=${encodeURIComponent(invoice.id)}`,
+      success_url: user.publicReturnUrl
+        ? publicReturn(user.publicReturnUrl, "success")
+        : `${env.APP_ORIGIN}${user.mobileReturn ? "/api/mobile/payments/return" : "/invoices"}?payment=success&invoiceId=${encodeURIComponent(invoice.id)}`,
+      cancel_url: user.publicReturnUrl
+        ? publicReturn(user.publicReturnUrl, "cancelled")
+        : `${env.APP_ORIGIN}${user.mobileReturn ? "/api/mobile/payments/return" : "/invoices"}?payment=cancelled&invoiceId=${encodeURIComponent(invoice.id)}`,
       // Buffer above Stripe's 30-minute minimum for database/API latency and retries.
       expires_at: Math.floor(Date.now() / 1000) + 45 * 60,
     };
@@ -122,7 +145,14 @@ async function reservePayment(user, invoiceId) {
       "INSERT INTO legalflow.invoice_payments(id,invoice_id,user_id,amount_cents,currency,status,checkout_parameters) VALUES($1,$2,$3,$4,'usd','creating',$5) RETURNING *",
       [id, invoice.id, user.id, amount, parameters],
     );
-    await audit(db, user, "invoice.checkout-requested", invoice.id);
+    await audit(
+      db,
+      user,
+      user.publicInvoiceId
+        ? "invoice.public-checkout-requested"
+        : "invoice.checkout-requested",
+      invoice.id,
+    );
     return result.rows[0];
   });
 }
@@ -487,6 +517,7 @@ export async function createCheckout(user, invoiceId, allowRecovery = true) {
         stripeRequestId: error.requestId || error.raw?.requestId || null,
         stripeStatus: error.statusCode || null,
         message: String(error.message || "No provider detail")
+          .replace(/(token=)[A-Za-z0-9_-]{43}/g, "$1[redacted]")
           .replace(/\b(?:sk|pk|rk)_(?:test|live)_[^\s"']+/g, "[redacted-key]")
           .replace(/[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/g, "[redacted-email]")
           .slice(0, 1000),
@@ -544,4 +575,67 @@ export async function processStripeEvent(event) {
       ? await stripeClient().checkout.sessions.retrieve(event.data.object.id)
       : event.data.object;
   await applyStripeSession(session, event);
+}
+
+function publicReturn(base, outcome) {
+  const url = new URL(base);
+  url.searchParams.set("payment", outcome);
+  return url.href;
+}
+// Reuse an existing public checkout; reconcile and expire an old private checkout
+// before replacing it. Never issue two simultaneously payable Stripe sessions.
+export async function createPublicCheckout(user, invoiceId) {
+  for (let n = 0; n < 3; n++) {
+    const result = await createCheckout(user, invoiceId);
+    if (result.paid) return result;
+    const attempt = (
+      await pool.query(
+        "SELECT * FROM legalflow.invoice_payments WHERE invoice_id=$1 AND status IN ('creating','open','processing') ORDER BY created_at DESC LIMIT 1",
+        [invoiceId],
+      )
+    ).rows[0];
+    assert(
+      attempt?.stripe_session_id,
+      409,
+      "Payment is being confirmed. Please refresh shortly",
+    );
+    let validReturn = false;
+    try {
+      const u = new URL(attempt.checkout_parameters.success_url);
+      const token = new URLSearchParams(u.hash.slice(1)).get("token");
+      validReturn =
+        u.origin === new URL(env.APP_ORIGIN).origin &&
+        u.pathname === "/pay/invoice" &&
+        token &&
+        (await publicInvoice(token)).id === invoiceId;
+    } catch {}
+    if (validReturn) return result;
+    let session = await stripeClient().checkout.sessions.retrieve(
+      attempt.stripe_session_id,
+    );
+    if (session.payment_status === "paid") {
+      await applyStripeSession(session);
+      return { paid: true };
+    }
+    assert(
+      session.status !== "complete",
+      409,
+      "Payment is processing. Please refresh shortly",
+    );
+    if (session.status === "open") {
+      try {
+        session = await stripeClient().checkout.sessions.expire(session.id);
+      } catch {
+        session = await stripeClient().checkout.sessions.retrieve(session.id);
+      }
+    }
+    await applyStripeSession(session);
+    if (session.payment_status === "paid") return { paid: true };
+    assert(
+      session.status === "expired",
+      409,
+      "Could not replace the earlier checkout safely. Please try again shortly",
+    );
+  }
+  throw new HttpError(409, "Checkout changed. Refresh and try again");
 }

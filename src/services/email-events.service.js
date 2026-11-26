@@ -1,4 +1,9 @@
-import { invoiceTotals, invoiceCaseIds, invoiceAllocations } from "./invoice-math.service.js";
+import { issueInvoiceLink } from "./public-invoice.service.js";
+import {
+  invoiceTotals,
+  invoiceCaseIds,
+  invoiceAllocations,
+} from "./invoice-math.service.js";
 import { findUser } from "../models/user.model.js";
 import { visible } from "./access.service.js";
 import { randomUUID } from "node:crypto";
@@ -28,6 +33,10 @@ const money = (invoice) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(
     invoiceTotals(invoice).total / 100,
   );
+const contentNote = (url) =>
+  url.includes("/pay/invoice")
+    ? "This private link opens your invoice without sign-in. Do not share it publicly."
+    : "Sign in to view the full details. This is an automated notification.";
 export function emailTemplate({ name, title, description, details, url }) {
   const greeting = `Hello ${name || "there"},`;
   const text = [
@@ -40,9 +49,9 @@ export function emailTemplate({ name, title, description, details, url }) {
     "",
     `Open LegalFlow: ${url}`,
     "",
-    "Sign in to view the full details. This is an automated notification.",
+    contentNote(url),
   ].join("\n");
-  const html = `<!doctype html><html><body style="margin:0;background:#f3f6fb;font-family:Arial,sans-serif;color:#182b49"><div style="max-width:580px;margin:24px auto;background:white;border:1px solid #dce4ef;border-radius:16px;overflow:hidden"><div style="padding:22px 28px;background:#2d5795;color:white;font-size:22px;font-weight:bold">LegalFlow</div><div style="padding:28px"><p>${escape(greeting)}</p><h1 style="font-size:23px">${escape(title)}</h1><p style="line-height:1.6">${escape(description)}</p><table style="width:100%;border-collapse:collapse">${details.map(([k, v]) => `<tr><td style="padding:10px 0;border-bottom:1px solid #e8edf4;color:#65758b">${escape(k)}</td><td style="padding:10px 0;border-bottom:1px solid #e8edf4;text-align:right">${escape(v)}</td></tr>`).join("")}</table><p style="margin:28px 0"><a href="${escape(url)}" style="background:#2d5795;color:white;padding:13px 20px;border-radius:8px;text-decoration:none">Open LegalFlow</a></p><p style="color:#65758b;font-size:12px">Sign in to view full details. This is an automated notification.</p></div></div></body></html>`;
+  const html = `<!doctype html><html><body style="margin:0;background:#f3f6fb;font-family:Arial,sans-serif;color:#182b49"><div style="max-width:580px;margin:24px auto;background:white;border:1px solid #dce4ef;border-radius:16px;overflow:hidden"><div style="padding:22px 28px;background:#2d5795;color:white;font-size:22px;font-weight:bold">LegalFlow</div><div style="padding:28px"><p>${escape(greeting)}</p><h1 style="font-size:23px">${escape(title)}</h1><p style="line-height:1.6">${escape(description)}</p><table style="width:100%;border-collapse:collapse">${details.map(([k, v]) => `<tr><td style="padding:10px 0;border-bottom:1px solid #e8edf4;color:#65758b">${escape(k)}</td><td style="padding:10px 0;border-bottom:1px solid #e8edf4;text-align:right">${escape(v)}</td></tr>`).join("")}</table><p style="margin:28px 0"><a href="${escape(url)}" style="background:#2d5795;color:white;padding:13px 20px;border-radius:8px;text-decoration:none">${url.includes("/pay/invoice") ? "View invoice" : "Open LegalFlow"}</a></p><p style="color:#65758b;font-size:12px">${escape(contentNote(url))}</p></div></div></body></html>`;
   return { text, html };
 }
 async function enqueue(db, eventKey, recipient, content) {
@@ -94,16 +103,13 @@ export async function queueInvoiceIssued(db, invoice) {
   await enqueue(db, `invoice.issued:${invoice.id}`, recipient, {
     title: `Invoice ${invoice.number} issued`,
     description:
-      "A new invoice is available for your case. Sign in to view the invoice and available payment options.",
+      "A new invoice is ready. Open your private link to view, download or pay online without signing in.",
     details: [
       ["Invoice", invoice.number],
       ["Total", money(invoice)],
       ["Due date", invoice.dueDate],
     ],
-    url: new URL(
-      `/invoices?caseId=${encodeURIComponent(invoice.caseId)}`,
-      env.APP_ORIGIN,
-    ).href,
+    url: (await issueInvoiceLink(db, invoice.id)).url,
   });
 }
 export async function queuePaymentCompleted(db, invoice, method) {
@@ -136,7 +142,7 @@ export async function queuePaymentCompleted(db, invoice, method) {
       description:
         "Your invoice is now marked paid. Thank you for your payment.",
       details,
-      url,
+      url: (await issueInvoiceLink(db, invoice.id)).url,
     });
   const team = (
     await db.query(
@@ -144,19 +150,39 @@ export async function queuePaymentCompleted(db, invoice, method) {
       [invoiceCaseIds(invoice)],
     )
   ).rows;
-  const linked = (await db.query("SELECT * FROM legalflow.cases WHERE id=ANY($1::text[])", [invoiceCaseIds(invoice)])).rows;
+  const linked = (
+    await db.query("SELECT * FROM legalflow.cases WHERE id=ANY($1::text[])", [
+      invoiceCaseIds(invoice),
+    ])
+  ).rows;
   const allocations = invoiceAllocations(invoice);
   for (const person of team) {
     const user = await findUser(person.id, db);
-    const own = linked.filter(c=>visible(user,c));
-    if(!own.length) continue;
-    const scopedDetails = details.map(([key,value])=>[key,key==="Case" ? own.map(c=>c.number).join(", ") : key==="Amount paid" ? new Intl.NumberFormat("en-US",{style:"currency",currency:"USD"}).format(own.reduce((sum,c)=>sum+(allocations[c.id] || 0),0)/100) : value]);
+    const own = linked.filter((c) => visible(user, c));
+    if (!own.length) continue;
+    const scopedDetails = details.map(([key, value]) => [
+      key,
+      key === "Case"
+        ? own.map((c) => c.number).join(", ")
+        : key === "Amount paid"
+          ? new Intl.NumberFormat("en-US", {
+              style: "currency",
+              currency: "USD",
+            }).format(
+              own.reduce((sum, c) => sum + (allocations[c.id] || 0), 0) / 100,
+            )
+          : value,
+    ]);
     await enqueue(db, `invoice.paid:${invoice.id}`, person, {
       title: `Payment received for ${invoice.number}`,
       description:
         "Payment has been completed for an invoice on your case. The invoice status is now Paid.",
       details: scopedDetails,
-      url: own.length === linked.length ? url : new URL(`/cases/${encodeURIComponent(own[0].id)}`,env.APP_ORIGIN).href,
+      url:
+        own.length === linked.length
+          ? url
+          : new URL(`/cases/${encodeURIComponent(own[0].id)}`, env.APP_ORIGIN)
+              .href,
     });
   }
 }

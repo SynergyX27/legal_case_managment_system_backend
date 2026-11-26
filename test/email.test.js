@@ -89,6 +89,10 @@ test("transactional email events, recipient routing, retry leases and failure re
       taxRate: 10,
       status: "Sent",
     };
+    await pool.query(
+      "INSERT INTO legalflow.invoices(id,number,case_id,client_id,data) VALUES($1,$2,$3,$4,$5)",
+      [inv.id, inv.number, inv.caseId, inv.clientId, inv],
+    );
     await assert.rejects(
       transaction(async (q) => {
         await queueCaseOpened(q, c);
@@ -170,6 +174,7 @@ test("transactional email events, recipient routing, retry leases and failure re
     );
     // Fresh payment event: transient SMTP errors retry later with a stable message ID.
     const retryInv = { ...inv, id: randomUUID(), number: "INV-EMAIL-RETRY" };
+    await pool.query("INSERT INTO legalflow.invoices(id,number,case_id,client_id,data) VALUES($1,$2,$3,$4,$5)",[retryInv.id,retryInv.number,retryInv.caseId,retryInv.clientId,retryInv]);
     await transaction((q) => queuePaymentCompleted(q, retryInv, "stripe"));
     const attemptIds = [];
     const failed = await deliverEmailBatch({
