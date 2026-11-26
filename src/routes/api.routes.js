@@ -1,3 +1,4 @@
+import * as invoicePicker from "../controllers/invoice-picker.controller.js";
 import * as invoiceDelivery from "../controllers/invoice-delivery.controller.js";
 import * as inbox from "../controllers/email-conversations.controller.js";
 import * as portfolios from "../controllers/workspaces.controller.js";
@@ -95,6 +96,7 @@ const emailAdminLimit = rateLimit({
 });
 api.post("/email/verify", emailAdminLimit, mail.verifyEmail);
 api.post("/email/retry", emailAdminLimit, mail.retryEmails);
+api.get("/invoice-picker", invoicePicker.search);
 api.get("/payments/config", payments.configuration);
 api.post("/invoices/:id/checkout", payments.checkout);
 api.post("/invoices/:id/payment-status", payments.status);

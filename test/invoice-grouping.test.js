@@ -324,6 +324,91 @@ test("grouped invoice persistence, isolation, discounts, PDFs and paid balances"
         .status,
       409,
     );
+    // Large catalog: every picker response stays bounded and scoped.
+    const freshCustomer = await create("anothercustomer", "customer");
+    await pool.query(
+      "INSERT INTO legalflow.cases(id,number,client_id,staff_id,manager_id,data) VALUES('outside','OTHER-CUSTOMER',$1,$2,$3,$4)",
+      [
+        freshCustomer.client_id,
+        staff.id,
+        manager.id,
+        {
+          id: "outside",
+          number: "OTHER-CUSTOMER",
+          residentName: "Other tenant",
+          propertyType: "SFH",
+          serviceDate: "2026-11-26",
+        },
+      ],
+    );
+    await pool.query(
+      `INSERT INTO legalflow.cases(id,number,client_id,staff_id,manager_id,workspace_id,data)
+      SELECT 'load-'||n,'LOAD-'||lpad(n::text,5,'0'),$1,$2,$3,'community',jsonb_build_object('id','load-'||n,'number','LOAD-'||lpad(n::text,5,'0'),'residentName','Large catalog tenant '||n,'propertyType','APT','serviceDate','2026-11-26','residentAddress','2035 Example Street','unit',n::text,'status','Pending','refId','GA26-LOAD-'||n) FROM generate_series(1,10025) n`,
+      [customer.client_id, staff.id, manager.id],
+    );
+    const prefix = `/invoice-picker?kind=cases&mode=group&clientId=${customer.client_id}&workspaceId=community&serviceDate=2026-11-26`;
+    let found = await o(prefix + "&q=LOAD&limit=25");
+    assert.equal(found.status, 200);
+    assert.equal(found.data.total, 10025);
+    assert.equal(found.data.rows.length, 25);
+    const second = await o(prefix + "&q=LOAD&page=2&limit=25");
+    assert.equal(second.data.rows.length, 25);
+    assert(
+      !second.data.rows.some((r) => found.data.rows.some((x) => x.id === r.id)),
+    );
+    assert.equal(
+      (await o(prefix + "&q=GA26-LOAD-10025")).data.rows[0].id,
+      "load-10025",
+    );
+    assert.equal(
+      (await o(prefix + "&q=%25")).data.total,
+      0,
+      "Percent in search is literal, not a wildcard",
+    );
+    assert.equal((await o(prefix + "&q=OTHER-CUSTOMER")).data.total, 0);
+    found = await o(prefix + "&q=Tenant%20a");
+    assert.deepEqual(found.data.rows[0].invoiceStatuses, ["Paid"]);
+    assert.equal(
+      (await o(prefix + "&q=Tenant%20a&unbilled=true")).data.total,
+      0,
+    );
+    assert.equal((await o(prefix + "&limit=101")).status, 422);
+    assert.equal((await u(prefix)).status, 403);
+    assert.equal(
+      (
+        await o(
+          `/invoice-picker?kind=dates&mode=group&clientId=${customer.client_id}&workspaceId=community`,
+        )
+      ).data.rows.find((r) => r.id === "2026-11-26").count,
+      10027,
+    );
+    assert.equal(
+      (
+        await o(
+          `/invoice-picker?kind=communities&mode=group&clientId=${customer.client_id}`,
+        )
+      ).data.rows[0].id,
+      "community",
+    );
+    assert(
+      (
+        await o("/invoice-picker?kind=customers&mode=group&q=customer")
+      ).data.rows.some((r) => r.id === customer.client_id),
+    );
+    await pool.query(
+      "UPDATE legalflow.users SET permissions='{\"invoices.create\":true}' WHERE id=$1",
+      [staff.id],
+    );
+    const staffClient = await login("staff");
+    assert.equal((await staffClient(prefix + "&q=LOAD-10025")).data.total, 1);
+    const otherStaff = await create("otherstaff", "staff", {
+      managerId: manager.id,
+    });
+    await pool.query(
+      "UPDATE legalflow.cases SET staff_id=$1 WHERE id='load-10025'",
+      [otherStaff.id],
+    );
+    assert.equal((await staffClient(prefix + "&q=LOAD-10025")).data.total, 0);
   } finally {
     if (server) await new Promise((r) => server.close(r));
     await pool.end();
