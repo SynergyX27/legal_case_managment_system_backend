@@ -1,3 +1,4 @@
+import * as invoiceDelivery from "../controllers/invoice-delivery.controller.js";
 import * as inbox from "../controllers/email-conversations.controller.js";
 import * as portfolios from "../controllers/workspaces.controller.js";
 import * as singleReport from "../controllers/single-case-report.controller.js";
@@ -140,6 +141,9 @@ api.delete("/cases/:id", c.deleteCase);
 api.post("/cases/:id/comments", c.comment);
 api.put("/clients/:id", c.putClient);
 api.delete("/clients/:id", c.deleteClient);
+api.get("/invoices/:id/pdf", invoiceDelivery.pdf);
+api.post("/invoices/:id/email", invoiceDelivery.email);
+api.get("/cases/:id/invoices/pdf", invoiceDelivery.bundle);
 api.put("/invoices/:id", c.putInvoice);
 api.delete("/invoices/:id", c.deleteInvoice);
 api.put("/events/:id", c.putEvent);

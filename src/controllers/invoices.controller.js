@@ -1,3 +1,7 @@
+import {
+  invoiceCaseIds,
+  invoiceTotals,
+} from "../services/invoice-math.service.js";
 import { visible } from "../services/access.service.js";
 import { findUser } from "../models/user.model.js";
 import {
@@ -13,7 +17,56 @@ import * as schema from "../validators/schemas.js";
 export async function putInvoice(req, res) {
   const v = schema.invoiceInput.parse({ ...req.body, id: req.params.id });
   await transaction(async (db) => {
-    const c = await accessibleCase(req.user, v.caseId, db, { lock: true });
+    const ids = invoiceCaseIds(v);
+    const cases = [];
+    for (const id of ids)
+      cases.push(await accessibleCase(req.user, id, db, { lock: true }));
+    const c = cases.find((x) => x.id === v.caseId);
+    assert(
+      cases.every((x) => x.client_id === v.clientId),
+      422,
+      "All invoice cases must belong to the same customer",
+    );
+    const existing = (
+      await db.query("SELECT data FROM legalflow.invoices WHERE id=$1", [v.id])
+    ).rows[0];
+    if (!existing && ids.length > 1) {
+      assert(
+        c.workspace_id &&
+          c.data.serviceDate &&
+          cases.every(
+            (x) =>
+              x.workspace_id === c.workspace_id &&
+              x.data.serviceDate === c.data.serviceDate &&
+              x.data.propertyType === "APT",
+          ),
+        422,
+        "Grouped invoices require apartment cases in the same assigned community and service date",
+      );
+    }
+    assert(
+      v.lines.every((l) => ids.includes(l.caseId || v.caseId)),
+      422,
+      "Every line must belong to an included case",
+    );
+    assert(
+      ids.every((id) => v.lines.some((l) => (l.caseId || v.caseId) === id)),
+      422,
+      "Every included case needs a line item",
+    );
+    assert(
+      invoiceTotals({ ...v, pricingVersion: 2 }).net >= 0,
+      422,
+      "Discount cannot exceed the base price",
+    );
+    let template =
+      ids.length > 1 ? "T2B" : c.data.propertyType === "APT" ? "T2A" : "T1";
+    if (existing?.data.template) template = existing.data.template;
+    assert(
+      !v.template || v.template === template,
+      422,
+      "Invoice template must match its property type and included cases",
+    );
     assert(
       c.client_id === v.clientId,
       422,
@@ -36,7 +89,8 @@ export async function putInvoice(req, res) {
       );
       await accessibleCase(req.user, old.case_id, db);
       assert(
-        old.case_id === v.caseId,
+        old.case_id === v.caseId &&
+          JSON.stringify(invoiceCaseIds(old.data)) === JSON.stringify(ids),
         422,
         "An invoice cannot be moved to another case",
       );
@@ -59,14 +113,54 @@ export async function putInvoice(req, res) {
         "This invoice has an active online checkout. Wait for payment confirmation or checkout expiry before editing or recording a manual payment",
       );
     }
+    assert(
+      Number.isSafeInteger(invoiceTotals({ ...v, pricingVersion: 2 }).total) &&
+        invoiceTotals({ ...v, pricingVersion: 2 }).total <= 99999999,
+      422,
+      "Invoice total must not exceed $999,999.99",
+    );
+    const seq = old
+      ? ""
+      : String(
+          (await db.query("SELECT nextval('legalflow.invoice_numbers') AS n"))
+            .rows[0].n,
+        ).padStart(6, "0");
+    const serviceDate = c.data.serviceDate || v.date;
+    const address =
+      (c.data.residentAddress || "SERVICE")
+        .split(/\s+/)[0]
+        .replace(/[^a-zA-Z0-9-]/g, "")
+        .slice(0, 30) || "SERVICE";
     const number =
       old?.number ||
-      `INV-${String((await db.query("SELECT nextval('legalflow.invoice_numbers') AS n")).rows[0].n).padStart(6, "0")}`;
+      `${address}-X${serviceDate.slice(2, 4)}-${serviceDate.slice(5)}-${seq}`;
     const paidAt =
       v.status === "Paid"
         ? old?.data.paidAt || new Date().toISOString()
         : undefined;
-    const data = { ...v, number, ...(paidAt ? { paidAt } : {}) };
+    const data = {
+      ...v,
+      number,
+      caseIds: ids,
+      pricingVersion:
+        old?.data.pricingVersion || (old && !old.data.caseIds ? 1 : 2),
+      template,
+      discount: v.discount || 0,
+      caseSnapshots:
+        old?.data.status !== "Draft" && old?.data.caseSnapshots
+          ? old.data.caseSnapshots
+          : cases.map((x) => ({
+              id: x.id,
+              number: x.number,
+              refId: x.data.refId,
+              tenant: x.data.residentName,
+              address: x.data.residentAddress,
+              unit: x.data.unit,
+              community: x.data.community,
+              serviceDate: x.data.serviceDate,
+            })),
+      ...(paidAt ? { paidAt } : {}),
+    };
     if (old)
       await db.query(
         "UPDATE legalflow.invoices SET data=$2,updated_at=now() WHERE id=$1",
@@ -84,20 +178,24 @@ export async function putInvoice(req, res) {
       (!old || old.data.status === "Draft")
     )
       await queueInvoiceIssued(db, data);
-    await activity(db, req.user, v.caseId, `${number}: ${v.status}`, "invoice");
+    for (const caseId of ids)
+      await activity(db, req.user, caseId, `${number}: ${v.status}`, "invoice");
     await audit(db, req.user, "invoice.saved", v.id);
     if (v.status !== "Draft") {
       const recipients = (
-        await db.query("SELECT id FROM legalflow.users WHERE client_id=$1 AND deleted_at IS NULL", [
-          v.clientId,
-        ])
+        await db.query(
+          "SELECT id FROM legalflow.users WHERE client_id=$1 AND deleted_at IS NULL",
+          [v.clientId],
+        )
       ).rows;
       const customerUsers = [];
       for (const row of recipients)
         customerUsers.push(await findUser(row.id, db));
       await notify(
         db,
-        customerUsers.filter((u) => visible(u, c)).map((u) => u.id),
+        customerUsers
+          .filter((u) => cases.every((c) => visible(u, c)))
+          .map((u) => u.id),
         "invoice",
         `${number} is ${v.status.toLowerCase()}`,
         "/invoices",
@@ -113,12 +211,13 @@ export async function deleteInvoice(req, res) {
   await transaction(async (db) => {
     const initial = (
       await db.query(
-        "SELECT case_id FROM legalflow.invoices WHERE id=$1 AND deleted_at IS NULL",
+        "SELECT case_id,data FROM legalflow.invoices WHERE id=$1 AND deleted_at IS NULL",
         [id],
       )
     ).rows[0];
     assert(initial, 404, "Invoice not found");
-    await accessibleCase(req.user, initial.case_id, db, { lock: true });
+    for (const caseId of invoiceCaseIds(initial.data))
+      await accessibleCase(req.user, caseId, db, { lock: true });
     const invoice = (
       await db.query(
         "SELECT * FROM legalflow.invoices WHERE id=$1 FOR UPDATE",

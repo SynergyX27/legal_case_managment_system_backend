@@ -1,3 +1,4 @@
+import { invoiceTotals, invoiceCaseIds, invoiceAllocations } from "./invoice-math.service.js";
 import { findUser } from "../models/user.model.js";
 import { visible } from "./access.service.js";
 import { randomUUID } from "node:crypto";
@@ -25,11 +26,7 @@ const address = (value) => {
 };
 const money = (invoice) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(
-    Math.round(
-      invoice.lines.reduce((n, l) => n + l.qty * l.price, 0) *
-        (1 + invoice.taxRate / 100) *
-        100,
-    ) / 100,
+    invoiceTotals(invoice).total / 100,
   );
 export function emailTemplate({ name, title, description, details, url }) {
   const greeting = `Hello ${name || "there"},`;
@@ -93,7 +90,7 @@ export async function queueCaseOpened(db, c) {
 }
 export async function queueInvoiceIssued(db, invoice) {
   const recipient = await client(db, invoice.clientId, invoice.caseId);
-  if (!recipient) return;
+  if (!recipient || !(await clientCanSeeInvoice(db, invoice))) return;
   await enqueue(db, `invoice.issued:${invoice.id}`, recipient, {
     title: `Invoice ${invoice.number} issued`,
     description:
@@ -133,7 +130,7 @@ export async function queuePaymentCompleted(db, invoice, method) {
     `/invoices?caseId=${encodeURIComponent(invoice.caseId)}`,
     env.APP_ORIGIN,
   ).href;
-  if (recipient)
+  if (recipient && (await clientCanSeeInvoice(db, invoice)))
     await enqueue(db, `invoice.paid:${invoice.id}`, recipient, {
       title: `Payment received for ${invoice.number}`,
       description:
@@ -143,16 +140,47 @@ export async function queuePaymentCompleted(db, invoice, method) {
     });
   const team = (
     await db.query(
-      "SELECT name,email FROM legalflow.users WHERE status='Active' AND (role='owner' OR id=$1 OR id=$2)",
-      [c?.staff_id || null, c?.manager_id || null],
+      "SELECT id,name,email FROM legalflow.users WHERE status='Active' AND deleted_at IS NULL AND (role='owner' OR id IN (SELECT staff_id FROM legalflow.cases WHERE id=ANY($1::text[]) UNION SELECT manager_id FROM legalflow.cases WHERE id=ANY($1::text[])))",
+      [invoiceCaseIds(invoice)],
     )
   ).rows;
-  for (const person of team)
+  const linked = (await db.query("SELECT * FROM legalflow.cases WHERE id=ANY($1::text[])", [invoiceCaseIds(invoice)])).rows;
+  const allocations = invoiceAllocations(invoice);
+  for (const person of team) {
+    const user = await findUser(person.id, db);
+    const own = linked.filter(c=>visible(user,c));
+    if(!own.length) continue;
+    const scopedDetails = details.map(([key,value])=>[key,key==="Case" ? own.map(c=>c.number).join(", ") : key==="Amount paid" ? new Intl.NumberFormat("en-US",{style:"currency",currency:"USD"}).format(own.reduce((sum,c)=>sum+(allocations[c.id] || 0),0)/100) : value]);
     await enqueue(db, `invoice.paid:${invoice.id}`, person, {
       title: `Payment received for ${invoice.number}`,
       description:
         "Payment has been completed for an invoice on your case. The invoice status is now Paid.",
-      details,
-      url,
+      details: scopedDetails,
+      url: own.length === linked.length ? url : new URL(`/cases/${encodeURIComponent(own[0].id)}`,env.APP_ORIGIN).href,
     });
+  }
+}
+
+async function clientCanSeeInvoice(db, invoice) {
+  const ids = invoiceCaseIds(invoice);
+  const c = (
+    await db.query("SELECT data FROM legalflow.clients WHERE id=$1", [
+      invoice.clientId,
+    ])
+  ).rows[0]?.data;
+  const users = (
+    await db.query(
+      "SELECT id FROM legalflow.users WHERE client_id=$1 AND lower(email)=lower($2) AND deleted_at IS NULL",
+      [invoice.clientId, c?.email || ""],
+    )
+  ).rows;
+  if (!users.length) return false;
+  const u = await findUser(users[0].id, db);
+  for (const id of ids) {
+    const row = (
+      await db.query("SELECT * FROM legalflow.cases WHERE id=$1", [id])
+    ).rows[0];
+    if (!visible(u, row)) return false;
+  }
+  return true;
 }

@@ -10,7 +10,7 @@ const money = (v) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(
     Number(v) || 0,
   );
-async function image(id, caseId) {
+export async function image(id, caseId) {
   if (!id) return null;
   const d = (
     await pool.query(

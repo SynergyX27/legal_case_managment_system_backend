@@ -1,3 +1,4 @@
+import { invoiceTotals, invoiceCaseIds } from "./invoice-math.service.js";
 import { queuePaymentCompleted } from "./email-events.service.js";
 import { can } from "./access.service.js";
 import Stripe from "stripe";
@@ -22,11 +23,7 @@ export const paymentConfiguration = () => ({
   testMode: env.STRIPE_SECRET_KEY.startsWith("sk_test_"),
 });
 export function invoiceAmountCents(invoice) {
-  const amount = Math.round(
-    invoice.lines.reduce((sum, line) => sum + line.qty * line.price, 0) *
-      (1 + invoice.taxRate / 100) *
-      100,
-  );
+  const amount = invoiceTotals(invoice).total;
   assert(
     Number.isSafeInteger(amount) && amount >= 50 && amount <= 99999999,
     422,
@@ -37,12 +34,16 @@ export function invoiceAmountCents(invoice) {
 async function authorizedInvoice(user, id, db = pool, lock = false) {
   if (lock) {
     const before = (
-      await db.query("SELECT case_id FROM legalflow.invoices WHERE id=$1", [id])
+      await db.query(
+        "SELECT case_id,data FROM legalflow.invoices WHERE id=$1",
+        [id],
+      )
     ).rows[0];
     assert(before, 404, "Invoice not found");
-    await db.query("SELECT id FROM legalflow.cases WHERE id=$1 FOR UPDATE", [
-      before.case_id,
-    ]);
+    await db.query(
+      "SELECT id FROM legalflow.cases WHERE id=ANY($1::text[]) ORDER BY id FOR UPDATE",
+      [invoiceCaseIds({ ...before.data, caseId: before.case_id })],
+    );
   }
   const row = (
     await db.query(
@@ -52,7 +53,8 @@ async function authorizedInvoice(user, id, db = pool, lock = false) {
   ).rows[0];
   assert(row, 404, "Invoice not found");
   assert(!row.deleted_at, 404, "Invoice not found");
-  await accessibleCase(user, row.case_id, db);
+  for (const id of invoiceCaseIds({ ...row.data, caseId: row.case_id }))
+    await accessibleCase(user, id, db);
   assert(
     [
       "invoices.view",
@@ -138,14 +140,16 @@ export async function applyStripeSession(session, event = null) {
       invoiceId = session.metadata?.invoiceId;
     if (!paymentId || !invoiceId) return; // Ignore Checkout sessions belonging to other applications.
     const before = (
-      await db.query("SELECT case_id FROM legalflow.invoices WHERE id=$1", [
-        invoiceId,
-      ])
+      await db.query(
+        "SELECT case_id,data FROM legalflow.invoices WHERE id=$1",
+        [invoiceId],
+      )
     ).rows[0];
     if (!before) return;
-    await db.query("SELECT id FROM legalflow.cases WHERE id=$1 FOR UPDATE", [
-      before.case_id,
-    ]);
+    await db.query(
+      "SELECT id FROM legalflow.cases WHERE id=ANY($1::text[]) ORDER BY id FOR UPDATE",
+      [invoiceCaseIds({ ...before.data, caseId: before.case_id })],
+    );
     const invoice = (
       await db.query(
         "SELECT * FROM legalflow.invoices WHERE id=$1 FOR UPDATE",
@@ -223,18 +227,19 @@ export async function applyStripeSession(session, event = null) {
         "stripe",
       );
       const actor = { id: payment.user_id };
-      await activity(
-        db,
-        actor,
-        invoice.case_id,
-        `${invoice.number}: paid online with Stripe`,
-        "invoice",
-      );
+      for (const caseId of invoiceCaseIds(invoice.data))
+        await activity(
+          db,
+          actor,
+          caseId,
+          `${invoice.number}: paid online with Stripe`,
+          "invoice",
+        );
       await audit(db, actor, "invoice.paid-online", invoiceId);
       const c = (
         await db.query(
-          "SELECT staff_id,manager_id FROM legalflow.cases WHERE id=$1",
-          [invoice.case_id],
+          "SELECT array_agg(staff_id) AS staff_ids,array_agg(manager_id) AS manager_ids FROM legalflow.cases WHERE id=ANY($1::text[])",
+          [invoiceCaseIds(invoice.data)],
         )
       ).rows[0];
       const owners = (
@@ -246,8 +251,8 @@ export async function applyStripeSession(session, event = null) {
         db,
         [
           payment.user_id,
-          c?.manager_id,
-          c?.staff_id,
+          ...(c?.manager_ids || []),
+          ...(c?.staff_ids || []),
           ...owners.map((o) => o.id),
         ],
         "invoice",

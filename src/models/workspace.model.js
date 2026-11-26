@@ -79,7 +79,7 @@ export async function workspace(u) {
     can(u, "invoices.edit") ||
     can(u, "invoices.delete")
       ? pool.query(
-          "SELECT data||jsonb_build_object('id',id,'number',number,'caseId',case_id,'clientId',client_id,'updatedAt',updated_at) AS data FROM legalflow.invoices WHERE deleted_at IS NULL AND case_id=ANY($1::text[]) AND ($2::boolean OR data->>'status'<>'Draft') ORDER BY created_at DESC",
+          "SELECT data||jsonb_build_object('id',id,'number',number,'caseId',case_id,'clientId',client_id,'updatedAt',updated_at) AS data FROM legalflow.invoices WHERE deleted_at IS NULL AND case_id=ANY($1::text[]) AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements_text(COALESCE(data->'caseIds','[]'::jsonb)) linked(id) WHERE NOT (linked.id=ANY($1::text[]))) AND ($2::boolean OR data->>'status'<>'Draft') ORDER BY created_at DESC",
           [ids, u.role !== "customer"],
         )
       : Promise.resolve({ rows: [] }),
@@ -165,9 +165,21 @@ export async function workspace(u) {
         : [],
     accounts: [{ id: "company", name: "LegalFlow" }],
     users: userViews,
-    clients: clients.rows.map(({data}) => {
-      const logins=users.filter(p => p.client_id===data.id).sort((a,b) => Number(b.id===data.primaryUserId)-Number(a.id===data.primaryUserId) || Number(b.email.toLowerCase()===(data.email||"").toLowerCase())-Number(a.email.toLowerCase()===(data.email||"").toLowerCase()) || new Date(a.created_at)-new Date(b.created_at) || a.id.localeCompare(b.id));
-      return {...data, primaryUserId:logins[0]?.id};
+    clients: clients.rows.map(({ data }) => {
+      const logins = users
+        .filter((p) => p.client_id === data.id)
+        .sort(
+          (a, b) =>
+            Number(b.id === data.primaryUserId) -
+              Number(a.id === data.primaryUserId) ||
+            Number(b.email.toLowerCase() === (data.email || "").toLowerCase()) -
+              Number(
+                a.email.toLowerCase() === (data.email || "").toLowerCase(),
+              ) ||
+            new Date(a.created_at) - new Date(b.created_at) ||
+            a.id.localeCompare(b.id),
+        );
+      return { ...data, primaryUserId: logins[0]?.id };
     }),
     cases: rawCases.map((c) => ({
       ...c.data,

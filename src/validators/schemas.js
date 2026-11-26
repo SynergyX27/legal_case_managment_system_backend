@@ -147,12 +147,19 @@ export const invoiceInput = z
   .object({
     id,
     caseId: id,
+    caseIds: z.array(id).max(100).optional(),
+    template: z.enum(["T1", "T2A", "T2B"]).optional(),
+    discount: z.number().finite().min(0).max(10000000).optional(),
     clientId: id,
     date,
     dueDate: date,
     lines: z
       .array(
         z.object({
+          caseId: id.optional(),
+          serviceOutcome: z
+            .enum(["", "Cleared", "Skipped", "Vacant", "Paid"])
+            .optional(),
           description: short.min(1),
           qty: z.number().finite().positive().max(100000),
           price: z.number().finite().min(0).max(10000000),
