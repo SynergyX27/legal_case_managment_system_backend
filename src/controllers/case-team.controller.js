@@ -1,3 +1,4 @@
+import { permit, can } from "../services/access.service.js";
 import { z } from "zod";
 import { transaction } from "../config/database.js";
 import { accessibleCase } from "../models/case.model.js";
@@ -36,6 +37,7 @@ export async function assign(req, res) {
       403,
       "Only owners and managers can assign case teams",
     );
+    permit(user, "team.assign");
     const ids = [...new Set(v.memberIds)];
     const members = await db.query(
       "SELECT id,role,status,deleted_at FROM legalflow.users WHERE id=ANY($1::text[]) AND role IN ('staff','manager')",
@@ -46,17 +48,16 @@ export async function assign(req, res) {
       422,
       "Select active staff and managers",
     );
-    const managedStaff =
-      user.role === "manager"
-        ? new Set(
-            (
-              await db.query(
-                "SELECT id FROM legalflow.users WHERE role='staff' AND manager_id=$1 AND status='Active' AND deleted_at IS NULL",
-                [user.id],
-              )
-            ).rows.map((r) => r.id),
-          )
-        : null;
+    const managedStaff = !can(user, "team.assign_managers")
+      ? new Set(
+          (
+            await db.query(
+              "SELECT id FROM legalflow.users WHERE role='staff' AND manager_id=$1 AND status='Active' AND deleted_at IS NULL",
+              [user.id],
+            )
+          ).rows.map((r) => r.id),
+        )
+      : null;
     if (managedStaff)
       assert(
         ids.every((id) => managedStaff.has(id)),

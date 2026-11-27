@@ -1,3 +1,4 @@
+import { permissionPolicy } from "../middleware/permissions.js";
 import * as fileManager from "../controllers/file-manager.controller.js";
 import { exportCases } from "../controllers/case-export.controller.js";
 import * as caseTeam from "../controllers/case-team.controller.js";
@@ -59,7 +60,16 @@ const publicPayLimit = rateLimit({
 api.use("/public/invoices", publicInvoice.privateResponse, publicLimit);
 api.post("/public/invoices/view", publicInvoice.view);
 api.post("/public/invoices/logo", publicInvoice.logo);
-api.post("/public/invoices/pdf", rateLimit({windowMs:60000,limit:8,standardHeaders:"draft-8",legacyHeaders:false}), publicInvoice.pdf);
+api.post(
+  "/public/invoices/pdf",
+  rateLimit({
+    windowMs: 60000,
+    limit: 8,
+    standardHeaders: "draft-8",
+    legacyHeaders: false,
+  }),
+  publicInvoice.pdf,
+);
 api.post("/public/invoices/status", publicInvoice.status);
 api.post("/public/invoices/checkout", publicPayLimit, publicInvoice.checkout);
 api.use(nativeIdentity);
@@ -75,6 +85,7 @@ const ipAuth = rateLimit({
 api.post("/auth/login", ipAuth, authThrottle(), auth.login);
 api.post("/auth/register", ipAuth, authThrottle(10), auth.register);
 api.use(requireAuth);
+api.use(permissionPolicy);
 api.get("/mobile/auth/me", (req, res) => res.json({ user: req.publicUser }));
 api.post("/mobile/auth/logout", mobile.logout);
 api.post("/mobile/integrations/dropbox/connect", mobile.dropboxConnect);

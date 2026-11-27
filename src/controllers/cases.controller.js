@@ -1,3 +1,5 @@
+import { protectCaseFields } from "../services/case-field-access.js";
+import { can } from "../services/access.service.js";
 import { visible } from "../services/access.service.js";
 import { validateWorkspace } from "./workspaces.controller.js";
 import { territoryCode } from "../services/territories.js";
@@ -23,7 +25,21 @@ export async function saveCase(db, user, input, metadata = {}) {
       v.id,
     ])
   ).rows[0];
-  permit(req.user, old ? "cases.edit" : "cases.create");
+  if (old) {
+    protectCaseFields(
+      req.user,
+      old,
+      Object.fromEntries(
+        Object.entries(req.body).filter(([k]) => k in schema.caseInput.shape),
+      ),
+    );
+    if (!can(req.user, "cases.edit")) {
+      for (const k of Object.keys(schema.caseInput.shape)) {
+        if (req.body[k] === undefined && old.data[k] !== undefined)
+          v[k] = old.data[k];
+      }
+    }
+  } else permit(req.user, "cases.create");
   if (old) await accessibleCase(req.user, v.id, db, { write: true });
   if (!old && req.user.role === "staff") {
     v.staffId = req.user.id;

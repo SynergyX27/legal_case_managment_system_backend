@@ -1,3 +1,5 @@
+import { validateProfile } from "../services/role-management.js";
+import { isSuper, can } from "../services/access.service.js";
 import { transaction } from "../config/database.js";
 import { assert } from "../utils/errors.js";
 import { owner } from "../services/access.service.js";
@@ -28,6 +30,7 @@ export async function updateUser(req, res) {
     );
     const old = await findUser(id, db);
     assert(old, 404, "User not found");
+    const profile = validateProfile(actor, v, old);
     assert(
       v.updatedAt &&
         new Date(v.updatedAt).getTime() === old.updated_at.getTime(),
@@ -77,12 +80,15 @@ export async function updateUser(req, res) {
       );
     }
     assert(
-      !v.permissions || ["staff", "manager"].includes(v.role),
+      !v.permissions || v.role !== "customer",
       422,
-      "Only manager and staff permissions can be customized",
+      "Customer permissions are managed by workspace access",
     );
     assert(
-      id !== req.user.id || (v.role === "owner" && v.status === "Active"),
+      id !== req.user.id ||
+        (v.role === "owner" &&
+          v.status === "Active" &&
+          (!isSuper(actor) || !profile || profile === "super_admin")),
       422,
       "You cannot remove your own owner access",
     );
@@ -102,11 +108,16 @@ export async function updateUser(req, res) {
         409,
         "Reassign this team member’s cases before changing their role",
       );
-    if (old.role === "owner" && (v.role !== "owner" || v.status !== "Active"))
+    if (
+      isSuper(old) &&
+      (v.role !== "owner" ||
+        v.status !== "Active" ||
+        (profile && profile !== "super_admin"))
+    )
       assert(
         (
           await db.query(
-            "SELECT 1 FROM legalflow.users WHERE role='owner' AND status='Active' AND id<>$1",
+            "SELECT 1 FROM legalflow.users WHERE role='owner' AND (role_profile IS NULL OR role_profile='super_admin') AND status='Active' AND deleted_at IS NULL AND id<>$1",
             [id],
           )
         ).rowCount,
@@ -121,13 +132,18 @@ export async function updateUser(req, res) {
         v.status,
         hash,
         managerId,
-        ["staff", "manager"].includes(v.role)
-          ? (v.permissions ?? old.permissions)
+        v.role !== "customer"
+          ? (v.permissions ??
+            (profile !== old.role_profile ? {} : old.permissions))
           : {},
         email,
         phone,
       ],
     );
+    await db.query("UPDATE legalflow.users SET role_profile=$2 WHERE id=$1", [
+      id,
+      profile,
+    ]);
     // A sole customer login is also the company contact. Multiple logins retain
     // separate personal contact details; edit the company contact in Customers.
     if (old.client_id && (v.email !== undefined || v.phone !== undefined)) {
@@ -191,6 +207,11 @@ export async function deleteUser(req, res) {
     );
     const old = await findUser(id, db);
     assert(old, 404, "User not found");
+    assert(
+      isSuper(actor) || old.role !== "owner",
+      403,
+      "Only Super Admin can delete owner accounts",
+    );
     if (old.client_id) {
       const client = (
         await db.query("SELECT * FROM legalflow.clients WHERE id=$1", [
@@ -214,11 +235,11 @@ export async function deleteUser(req, res) {
       409,
       "User changed on another device. Reopen their details before deleting",
     );
-    if (old.role === "owner" && old.status === "Active")
+    if (isSuper(old) && old.status === "Active")
       assert(
         (
           await db.query(
-            "SELECT 1 FROM legalflow.users WHERE role='owner' AND status='Active' AND deleted_at IS NULL AND id<>$1",
+            "SELECT 1 FROM legalflow.users WHERE role='owner' AND (role_profile IS NULL OR role_profile='super_admin') AND status='Active' AND deleted_at IS NULL AND id<>$1",
             [id],
           )
         ).rowCount,

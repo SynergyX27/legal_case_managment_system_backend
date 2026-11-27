@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { visible } from "./access.service.js";
+import { visible, can } from "./access.service.js";
 export const reviewLink = (caseId, collectionId) =>
   `/documents?caseId=${encodeURIComponent(caseId)}&collectionId=${encodeURIComponent(collectionId)}&approval=pending`;
 // Called within the file mutation transaction; stable IDs group a batch into one alert per collection/reviewer.
@@ -37,9 +37,12 @@ export async function syncReviewAlerts(db, groups, { bump = false } = {}) {
       c && collection
         ? (
             await db.query(
-              "SELECT id,role,status FROM legalflow.users WHERE deleted_at IS NULL AND status='Active' AND role IN ('owner','manager')",
+              "SELECT u.*,COALESCE(p.permissions,r.permissions) AS role_permissions FROM legalflow.users u LEFT JOIN legalflow.role_permissions r ON r.role=u.role LEFT JOIN legalflow.role_profiles p ON p.id=u.role_profile WHERE u.deleted_at IS NULL AND u.status='Active' AND u.role<>'customer'",
             )
-          ).rows.filter((u) => visible(u, c))
+          ).rows.filter(
+            (u) =>
+              visible(u, c) && can(u, "files.approve") && can(u, "files.view"),
+          )
         : [];
     await db.query(
       "DELETE FROM legalflow.notifications WHERE kind='file-review' AND link=$1 AND ($2::boolean OR NOT(user_id=ANY($3::text[])))",

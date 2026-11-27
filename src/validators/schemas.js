@@ -1,3 +1,4 @@
+import { permissionKeys, roleProfiles } from "../services/role-profiles.js";
 import { z } from "zod";
 const text = z.string().trim().max(10000);
 const short = z.string().trim().max(250);
@@ -14,19 +15,10 @@ export const password = z
   .max(128);
 export const permissionsInput = z
   .object(
-    Object.fromEntries(
-      [
-        "cases.create",
-        "cases.edit",
-        "cases.delete",
-        "invoices.view",
-        "invoices.create",
-        "invoices.edit",
-        "invoices.delete",
-      ].map((k) => [k, z.boolean().optional()]),
-    ),
+    Object.fromEntries(permissionKeys.map((k) => [k, z.boolean().optional()])),
   )
   .strict();
+const profileInput = z.enum(roleProfiles.map((p) => p.id)).optional();
 export const userInput = z.object({
   name: short.min(2),
   email: z
@@ -48,12 +40,15 @@ export const userInput = z.object({
   title: optional,
   clientId: optional,
   role: role.default("customer"),
+  roleProfile: profileInput,
+  permissions: permissionsInput.optional(),
   managerId: optional,
 });
 export const accessInput = z.object({
   email: userInput.shape.email.optional(),
   phone: short.optional(),
   role,
+  roleProfile: profileInput,
   status: z.enum(["Active", "Inactive"]),
   password: password.optional(),
   managerId: optional.optional(),

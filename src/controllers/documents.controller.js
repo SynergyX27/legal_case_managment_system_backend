@@ -1,3 +1,8 @@
+import {
+  collectionAccess,
+  fileEditAccess,
+} from "../services/file-role-access.js";
+import { permit, can } from "../services/access.service.js";
 import { syncReviewAlerts } from "../services/file-review-alerts.service.js";
 import {
   randomUUID,
@@ -23,12 +28,17 @@ export async function authorizeDocument(u, id, write = false, db = pool) {
   ).rows[0];
   assert(d, 404, "Document not found");
   if (d.case_id) await accessibleCase(u, d.case_id, db, { write });
-  else owner(u);
+  else {
+    owner(u);
+    permit(u, "company.manage");
+  }
   assert(
     u.role !== "customer" || d.approval === "approved",
     404,
     "Document not found",
   );
+  await collectionAccess(u, d.collection_id, db);
+  if (write) fileEditAccess(u, d);
   return d;
 }
 const kindPlaceholder = (mime) =>
@@ -69,7 +79,10 @@ export async function upload(req, res) {
   );
   const caseId = req.body.caseId || null;
   if (caseId) await accessibleCase(req.user, caseId, pool, { write: true });
-  else owner(req.user);
+  else {
+    owner(req.user);
+    permit(req.user, "company.manage");
+  }
   const sniff = await fileTypeFromBuffer(req.file.buffer).catch(() => null);
   const ext = req.file.originalname.split(".").at(-1)?.toLowerCase();
   let mime = sniff?.mime;
@@ -113,6 +126,7 @@ export async function upload(req, res) {
       409,
       "This upload is awaiting repair. Ask the owner to reconcile documents before retrying",
     );
+    await collectionAccess(req.user, existing.collection_id, pool);
     if (existing.state === "ready") return res.json(documentView(existing));
   }
   const collectionId = caseId
@@ -132,8 +146,10 @@ export async function upload(req, res) {
       422,
       "Choose a valid file collection",
     );
+  if (caseId) await collectionAccess(req.user, collectionId, pool);
   let replacement = null;
   if (req.body.replaceId) {
+    permit(req.user, "files.edit");
     replacement = await authorizeDocument(req.user, req.body.replaceId, true);
     assert(
       caseId && replacement.case_id === caseId && replacement.state === "ready",

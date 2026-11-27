@@ -1,3 +1,8 @@
+import {
+  collectionAccess,
+  fileEditAccess,
+} from "../services/file-role-access.js";
+import { can, permit } from "../services/access.service.js";
 import { syncReviewAlerts } from "../services/file-review-alerts.service.js";
 import { z } from "zod";
 import { randomUUID } from "node:crypto";
@@ -39,7 +44,12 @@ export async function collections(req, res) {
       tenant: c.data.residentName,
       address: c.data.residentAddress,
     },
-    collections: rows,
+    collections: rows.filter(
+      (f) =>
+        !req.user.role_profile ||
+        can(req.user, "files.legal") ||
+        f.section === "visuals",
+    ),
   });
 }
 export async function files(req, res) {
@@ -55,7 +65,7 @@ export async function files(req, res) {
     .parse(req.query);
   const rows = (
     await pool.query(
-      "SELECT d.*,u.name AS uploader FROM legalflow.documents d JOIN legalflow.users u ON u.id=d.uploaded_by WHERE d.case_id=$1 AND d.state='ready' AND ($2='' OR d.collection_id=$2) AND ($3::boolean OR d.approval='approved') AND strpos(lower(d.name),lower($4))>0 AND ($5='' OR d.approval=$5) AND ($7='' OR d.kind=$7) ORDER BY d.created_at DESC,d.id LIMIT 51 OFFSET $6",
+      "SELECT d.*,u.name AS uploader FROM legalflow.documents d JOIN legalflow.users u ON u.id=d.uploaded_by WHERE d.case_id=$1 AND d.state='ready' AND ($2='' OR d.collection_id=$2) AND ($3::boolean OR d.approval='approved') AND strpos(lower(d.name),lower($4))>0 AND ($5='' OR d.approval=$5) AND ($7='' OR d.kind=$7) AND ($8::boolean OR EXISTS (SELECT 1 FROM legalflow.file_collections f WHERE f.id=d.collection_id AND f.section='visuals')) ORDER BY d.created_at DESC,d.id LIMIT 51 OFFSET $6",
       [
         req.params.id,
         v.collectionId,
@@ -64,6 +74,7 @@ export async function files(req, res) {
         v.approval,
         v.offset,
         v.kind,
+        !req.user.role_profile || can(req.user, "files.legal"),
       ],
     )
   ).rows;
@@ -181,10 +192,15 @@ export async function updateFiles(req, res) {
         409,
         "A file changed. Refresh the folder before trying again",
       );
+      await collectionAccess(req.user, d.collection_id, db);
+      if (v.action === "move")
+        await collectionAccess(req.user, v.collectionId, db);
       const review = ["approve", "reject"].includes(v.action);
+      permit(req.user, review ? "files.approve" : "files.edit");
+      if (!review) fileEditAccess(req.user, d);
       if (review)
         assert(
-          ["owner", "manager"].includes(req.user.role),
+          can(req.user, "files.approve"),
           403,
           "Only the owner and assigned managers can review files",
         );
@@ -238,7 +254,7 @@ export async function updateFiles(req, res) {
 
 export async function reviewQueue(req, res) {
   assert(
-    ["owner", "manager"].includes(req.user.role),
+    can(req.user, "files.approve"),
     403,
     "Only owners and assigned managers can review files",
   );

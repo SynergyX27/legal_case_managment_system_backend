@@ -1,27 +1,53 @@
+import { permissionKeys } from "./role-profiles.js";
+export { permissionKeys } from "./role-profiles.js";
 import { assert } from "../utils/errors.js";
 export const internal = (u) => u && u.role !== "customer";
 export const owner = (u) =>
   assert(u?.role === "owner", 403, "Only the owner can manage this resource");
-export const permissionKeys = [
-  "cases.create",
-  "cases.edit",
-  "cases.delete",
-  "invoices.view",
-  "invoices.create",
-  "invoices.edit",
-  "invoices.delete",
-];
 export function effectivePermissions(u) {
-  if (u?.role === "owner")
+  if (!u) return {};
+  if (
+    u.role === "owner" &&
+    (!u.role_profile || u.role_profile === "super_admin")
+  )
     return Object.fromEntries(permissionKeys.map((k) => [k, true]));
-  if (!["manager", "staff"].includes(u?.role)) return {};
+  if (u.role === "customer") return {};
+  const legacy = {
+    "cases.view": true,
+    "cases.details": true,
+    "cases.financials": true,
+    "cases.import": true,
+    "files.view": true,
+    "files.legal": true,
+    "files.upload": true,
+    "files.edit": true,
+    "files.delete": true,
+    "files.approve": u.role === "manager",
+    "reports.export": true,
+    "email.use": true,
+    "chat.use": true,
+    "calendar.manage": true,
+    "team.assign": u.role === "manager",
+    "invoices.send":
+      (u.permissions?.["invoices.create"] ??
+        u.role_permissions?.["invoices.create"]) === true ||
+      (u.permissions?.["invoices.edit"] ??
+        u.role_permissions?.["invoices.edit"]) === true,
+    "payments.record":
+      (u.permissions?.["invoices.edit"] ??
+        u.role_permissions?.["invoices.edit"]) === true,
+  };
   return Object.fromEntries(
     permissionKeys.map((k) => [
       k,
-      (u.permissions?.[k] ?? u.role_permissions?.[k]) === true,
+      (u.permissions?.[k] ??
+        u.role_permissions?.[k] ??
+        (!u.role_profile ? legacy[k] : false)) === true,
     ]),
   );
 }
+export const isSuper = (u) =>
+  u?.role === "owner" && (!u.role_profile || u.role_profile === "super_admin");
 export const can = (u, key) =>
   u?.status === "Active" && effectivePermissions(u)[key] === true;
 export const permit = (u, key) =>
@@ -32,7 +58,9 @@ export const permit = (u, key) =>
   );
 export const biller = (u) =>
   assert(
-    ["invoices.create", "invoices.edit"].some((k) => can(u, k)),
+    ["invoices.create", "invoices.edit", "invoices.send"].some((k) =>
+      can(u, k),
+    ),
     403,
     "Invoice permission required",
   );
@@ -45,8 +73,9 @@ export const teamIds = (c) => [
 ];
 export const visible = (u, c) =>
   !!c &&
+  (u?.role === "customer" || can(u, "cases.view")) &&
   u?.status === "Active" &&
-  (u.role === "owner" ||
+  (can(u, "cases.view_all") ||
     (u.role === "customer"
       ? c.client_id === u.client_id &&
         ((u.customer_access || "all") === "all" ||
@@ -55,6 +84,8 @@ export const visible = (u, c) =>
 export const canMessage = (a, b, cases) =>
   !!a &&
   !!b &&
+  (!a.role_profile || a.role === "customer" || can(a, "chat.use")) &&
+  (!b.role_profile || b.role === "customer" || can(b, "chat.use")) &&
   a.id !== b.id &&
   a.status === "Active" &&
   b.status === "Active" &&
@@ -69,7 +100,9 @@ export const canMessage = (a, b, cases) =>
       );
     }));
 export function caseScope(u, alias = "c") {
-  if (u.role === "owner") return { sql: "TRUE", values: [] };
+  if (u.role !== "customer" && !can(u, "cases.view"))
+    return { sql: "FALSE", values: [] };
+  if (can(u, "cases.view_all")) return { sql: "TRUE", values: [] };
   if (u.role === "customer")
     return {
       sql: `${alias}.client_id=$1 AND ($2::boolean OR ${alias}.workspace_id=ANY($3::text[]))`,

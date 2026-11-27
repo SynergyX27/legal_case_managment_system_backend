@@ -1,3 +1,4 @@
+import { validateProfile } from "../services/role-management.js";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { pool, transaction } from "../config/database.js";
@@ -13,6 +14,12 @@ export async function createUserRecord(input, actor = null) {
     actor?.role === "owner" || data.role === "customer",
     403,
     "Public registration only creates customers",
+  );
+  const profile = actor ? validateProfile(actor, data) : null;
+  assert(
+    actor || (!data.roleProfile && !data.permissions),
+    403,
+    "Public registration cannot set permissions",
   );
   const hash = await hashPassword(data.password);
   return transaction(async (db) => {
@@ -88,11 +95,33 @@ export async function createUserRecord(input, actor = null) {
         data.role === "staff" ? data.managerId : null,
       ],
     );
+    await db.query(
+      "UPDATE legalflow.users SET role_profile=$2,permissions=$3 WHERE id=$1",
+      [id, profile, data.permissions || {}],
+    );
     if (data.role === "customer") {
-      const live=(await db.query("SELECT id FROM legalflow.users WHERE client_id=$1 AND deleted_at IS NULL",[clientId])).rows;
-      if(live.length===1) await db.query("UPDATE legalflow.clients SET data=data || jsonb_build_object('primaryUserId',$2::text) WHERE id=$1",[clientId,id]);
+      const live = (
+        await db.query(
+          "SELECT id FROM legalflow.users WHERE client_id=$1 AND deleted_at IS NULL",
+          [clientId],
+        )
+      ).rows;
+      if (live.length === 1)
+        await db.query(
+          "UPDATE legalflow.clients SET data=data || jsonb_build_object('primaryUserId',$2::text) WHERE id=$1",
+          [clientId, id],
+        );
     }
-    if (data.role === "customer" && data.clientId && (await db.query("SELECT 1 FROM legalflow.users WHERE client_id=$1 AND id<>$2 AND deleted_at IS NULL",[clientId,id])).rowCount)
+    if (
+      data.role === "customer" &&
+      data.clientId &&
+      (
+        await db.query(
+          "SELECT 1 FROM legalflow.users WHERE client_id=$1 AND id<>$2 AND deleted_at IS NULL",
+          [clientId, id],
+        )
+      ).rowCount
+    )
       await db.query(
         "UPDATE legalflow.users SET customer_access='community' WHERE id=$1",
         [id],
@@ -133,6 +162,8 @@ export async function register(req, res) {
   const u = await createUserRecord({
     ...req.body,
     role: "customer",
+    roleProfile: undefined,
+    permissions: undefined,
     clientId: "",
   });
   await establishSession(req, u);

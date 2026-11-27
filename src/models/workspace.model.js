@@ -1,3 +1,4 @@
+import { redactCase } from "../services/role-data.js";
 import { findUser } from "./user.model.js";
 import { withCaseBalances } from "../services/case-balance.service.js";
 import { pool } from "../config/database.js";
@@ -17,7 +18,7 @@ export async function workspace(u) {
   const ids = rawCases.map((c) => c.id);
   const users = (
     await pool.query(
-      "SELECT u.*,r.permissions AS role_permissions, ARRAY(SELECT w.id FROM legalflow.workspaces w JOIN legalflow.workspace_members m ON m.workspace_id=w.id OR m.workspace_id=w.parent_id WHERE m.user_id=u.id AND w.client_id=u.client_id AND NOT w.archived) AS workspace_ids FROM legalflow.users u LEFT JOIN legalflow.role_permissions r ON r.role=u.role WHERE u.deleted_at IS NULL ORDER BY u.name",
+      "SELECT u.*,COALESCE(p.permissions,r.permissions) AS role_permissions, ARRAY(SELECT w.id FROM legalflow.workspaces w JOIN legalflow.workspace_members m ON m.workspace_id=w.id OR m.workspace_id=w.parent_id WHERE m.user_id=u.id AND w.client_id=u.client_id AND NOT w.archived) AS workspace_ids FROM legalflow.users u LEFT JOIN legalflow.role_permissions r ON r.role=u.role LEFT JOIN legalflow.role_profiles p ON p.id=u.role_profile WHERE u.deleted_at IS NULL ORDER BY u.name",
     )
   ).rows;
   const hydratedUsers = users;
@@ -26,12 +27,13 @@ export async function workspace(u) {
   );
   const userViews = related.map((p) => {
     const v = publicUser(p);
-    return u.role === "owner" || u.id === p.id
+    return can(u, "users.manage") || u.id === p.id
       ? v
       : {
           id: v.id,
           name: v.name,
           role: v.role,
+          roleProfile: v.roleProfile,
           managerId: v.managerId,
           status: v.status,
           clientId: v.clientId,
@@ -56,11 +58,11 @@ export async function workspace(u) {
     memberRows,
   ] = await Promise.all([
     pool.query(
-      u.role === "owner" || can(u, "cases.create")
+      can(u, "users.manage") || can(u, "cases.create")
         ? "SELECT data FROM legalflow.clients WHERE data->>'deleted' IS DISTINCT FROM 'true' ORDER BY created_at DESC"
         : "SELECT data FROM legalflow.clients WHERE id=ANY($1::text[]) AND data->>'deleted' IS DISTINCT FROM 'true'",
       [
-        ...(u.role === "owner" || can(u, "cases.create")
+        ...(can(u, "users.manage") || can(u, "cases.create")
           ? []
           : [
               [
@@ -84,8 +86,8 @@ export async function workspace(u) {
         )
       : Promise.resolve({ rows: [] }),
     pool.query(
-      "SELECT d.*,u.name AS uploader FROM ((SELECT * FROM legalflow.documents WHERE state='ready' AND ($3::boolean OR approval='approved') AND case_id=ANY($1::text[]) ORDER BY created_at DESC,id LIMIT 1000) UNION ALL (SELECT * FROM legalflow.documents WHERE state='ready' AND case_id IS NULL AND $2::boolean)) d JOIN legalflow.users u ON u.id=d.uploaded_by",
-      [ids, u.role === "owner", u.role !== "customer"],
+      "SELECT d.*,u.name AS uploader,(SELECT section FROM legalflow.file_collections WHERE id=d.collection_id) AS collection_section FROM ((SELECT * FROM legalflow.documents WHERE state='ready' AND ($3::boolean OR approval='approved') AND case_id=ANY($1::text[]) ORDER BY created_at DESC,id LIMIT 1000) UNION ALL (SELECT * FROM legalflow.documents WHERE state='ready' AND case_id IS NULL AND $2::boolean)) d JOIN legalflow.users u ON u.id=d.uploaded_by",
+      [ids, can(u, "company.manage"), u.role !== "customer"],
     ),
     u.role !== "customer"
       ? pool.query(
@@ -149,13 +151,24 @@ export async function workspace(u) {
     const mine = members.find((m) => m.user_id === u.id);
     if (mine?.last_read_id) chatRead[`${u.id}:${cid}`] = mine.last_read_id;
   }
-  const attachments = docs.rows.map(documentView);
+  const attachments =
+    u.role === "customer" || can(u, "files.view")
+      ? docs.rows
+          .filter(
+            (d) =>
+              can(u, "files.legal") ||
+              !u.role_profile ||
+              !d.case_id ||
+              d.collection_section === "visuals",
+          )
+          .map(documentView)
+      : [];
   return {
     rolePermissions:
       u.role === "owner"
         ? (
             await pool.query(
-              "SELECT role,permissions,updated_at FROM legalflow.role_permissions ORDER BY role",
+              "SELECT role,permissions,updated_at FROM legalflow.role_permissions UNION ALL SELECT 'profile_'||id AS role,permissions,updated_at FROM legalflow.role_profiles WHERE id<>'super_admin' ORDER BY role",
             )
           ).rows.map((r) => ({
             role: r.role,
@@ -179,39 +192,56 @@ export async function workspace(u) {
             new Date(a.created_at) - new Date(b.created_at) ||
             a.id.localeCompare(b.id),
         );
+      if (u.role_profile && !can(u, "cases.details") && !can(u, "email.use"))
+        data = {
+          id: data.id,
+          name: data.name,
+          company: data.company,
+          status: data.status,
+          email: "",
+          phone: "",
+          address: "",
+        };
       return { ...data, primaryUserId: logins[0]?.id };
     }),
-    cases: rawCases.map((c) => ({
-      ...c.data,
-      id: c.id,
-      number: c.number,
-      clientId: c.client_id,
-      staffId: c.staff_id || "",
-      managerId: c.manager_id || "",
-      workspaceId: c.workspace_id || "",
-      accountId: "company",
-      fee: 0,
-      invoiceStatus: "Not Invoiced",
-      paymentStatus: "Unpaid",
-      createdAt: c.created_at.toISOString(),
-      updatedAt: c.updated_at.toISOString(),
-      ...(u.role === "customer" ? { notes: "", instructions: "" } : {}),
-      attachmentsCount: c.attachment_count,
-      attachments: attachments
-        .filter((d) => d.caseId === c.id)
-        .map(({ caseId, ...d }) => d),
-      comments: comments.rows
-        .filter((m) => m.case_id === c.id)
-        .map((m) => ({
-          id: m.id,
-          by: m.user_id,
-          text: m.text,
-          at: m.at.toISOString(),
-        })),
-    })),
+    cases: rawCases.map((c) =>
+      redactCase(u, {
+        ...c.data,
+        id: c.id,
+        number: c.number,
+        clientId: c.client_id,
+        staffId: c.staff_id || "",
+        managerId: c.manager_id || "",
+        workspaceId: c.workspace_id || "",
+        accountId: "company",
+        fee: 0,
+        invoiceStatus: "Not Invoiced",
+        paymentStatus: "Unpaid",
+        createdAt: c.created_at.toISOString(),
+        updatedAt: c.updated_at.toISOString(),
+        ...(u.role === "customer" ? { notes: "", instructions: "" } : {}),
+        attachmentsCount: c.attachment_count,
+        attachments: attachments
+          .filter((d) => d.caseId === c.id)
+          .map(({ caseId, ...d }) => d),
+        comments: comments.rows
+          .filter((m) => m.case_id === c.id)
+          .map((m) => ({
+            id: m.id,
+            by: m.user_id,
+            text: m.text,
+            at: m.at.toISOString(),
+          })),
+      }),
+    ),
     invoices: invoices.rows.map((i) => i.data),
-    events: events.rows.map((e) => e.data),
-    activities: activities.rows.map((a) => ({
+    events: (u.role_profile && !can(u, "cases.details") ? [] : events.rows).map(
+      (e) => e.data,
+    ),
+    activities: (u.role_profile && !can(u, "cases.details")
+      ? []
+      : activities.rows
+    ).map((a) => ({
       id: a.id,
       caseId: a.case_id,
       by: a.actor || "Team",
@@ -226,7 +256,9 @@ export async function workspace(u) {
       .filter(
         (n) =>
           n.kind !== "file-review" ||
-          (["owner", "manager"].includes(u.role) &&
+          ((u.role_profile
+            ? can(u, "files.approve")
+            : ["owner", "manager"].includes(u.role)) &&
             ids.includes(
               new URL(n.link, "https://legalflow.invalid").searchParams.get(
                 "caseId",

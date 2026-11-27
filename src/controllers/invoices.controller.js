@@ -1,3 +1,4 @@
+import { can } from "../services/access.service.js";
 import {
   invoiceCaseIds,
   invoiceTotals,
@@ -78,7 +79,18 @@ export async function putInvoice(req, res) {
         [v.id],
       )
     ).rows[0];
-    permit(req.user, old ? "invoices.edit" : "invoices.create");
+    const markingPaid = v.status === "Paid" && old?.data.status !== "Paid";
+    if (markingPaid) permit(req.user, "payments.record");
+    if (old && !can(req.user, "invoices.edit") && markingPaid) {
+      const normalized = schema.invoiceInput.parse({ ...old.data, id: old.id });
+      for (const k of Object.keys(v))
+        if (k !== "status")
+          assert(
+            JSON.stringify(v[k]) === JSON.stringify(normalized[k]),
+            403,
+            "Payment role cannot change invoice prices or details",
+          );
+    } else permit(req.user, old ? "invoices.edit" : "invoices.create");
     assert(!old?.deleted_at, 409, "This invoice has been deleted");
     if (old) {
       assert(

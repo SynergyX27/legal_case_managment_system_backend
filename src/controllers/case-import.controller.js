@@ -1,3 +1,4 @@
+import { can } from "../services/access.service.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { pool, transaction } from "../config/database.js";
@@ -130,7 +131,15 @@ export async function bulkUpdate(req, res) {
       "SELECT pg_advisory_xact_lock(hashtext('legalflow-user-access'))",
     );
     const user = await findUser(req.user.id, db);
-    permit(user, "cases.edit");
+    if (!v.patch.status || v.patch.staffId) permit(user, "cases.edit");
+    else
+      assert(
+        can(user, "cases.edit") ||
+          can(user, "cases.edit_operations") ||
+          can(user, "cases.update_progress"),
+        403,
+        "Case progress permission required",
+      );
     for (const record of [...v.cases].sort((a, b) =>
       a.id.localeCompare(b.id),
     )) {
