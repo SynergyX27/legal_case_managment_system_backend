@@ -39,7 +39,9 @@ export async function preview(req, res) {
     );
   }
   const [clients, users, numbers, fields] = await Promise.all([
-    pool.query("SELECT id,data FROM legalflow.clients WHERE data->>'deleted' IS DISTINCT FROM 'true'"),
+    pool.query(
+      "SELECT id,data FROM legalflow.clients WHERE data->>'deleted' IS DISTINCT FROM 'true'",
+    ),
     pool.query(
       "SELECT id,name,email,username,role,status,manager_id,client_id FROM legalflow.users WHERE deleted_at IS NULL",
     ),
@@ -139,9 +141,9 @@ export async function bulkUpdate(req, res) {
       let team = {};
       if (v.patch.staffId) {
         assert(
-          user.role !== "staff",
+          user.role === "owner",
           403,
-          "Only owners and managers can reassign staff",
+          "Only the owner can change primary staff and manager assignments",
         );
         const staff = (
           await db.query("SELECT manager_id FROM legalflow.users WHERE id=$1", [

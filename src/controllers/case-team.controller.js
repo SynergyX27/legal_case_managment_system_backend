@@ -38,7 +38,7 @@ export async function assign(req, res) {
     );
     const ids = [...new Set(v.memberIds)];
     const members = await db.query(
-      "SELECT id FROM legalflow.users WHERE id=ANY($1::text[]) AND role IN ('staff','manager') AND status='Active' AND deleted_at IS NULL",
+      "SELECT id,role,status,deleted_at FROM legalflow.users WHERE id=ANY($1::text[]) AND role IN ('staff','manager')",
       [ids],
     );
     assert(
@@ -46,6 +46,23 @@ export async function assign(req, res) {
       422,
       "Select active staff and managers",
     );
+    const managedStaff =
+      user.role === "manager"
+        ? new Set(
+            (
+              await db.query(
+                "SELECT id FROM legalflow.users WHERE role='staff' AND manager_id=$1 AND status='Active' AND deleted_at IS NULL",
+                [user.id],
+              )
+            ).rows.map((r) => r.id),
+          )
+        : null;
+    if (managedStaff)
+      assert(
+        ids.every((id) => managedStaff.has(id)),
+        403,
+        "Managers can assign only additional staff from their own team",
+      );
     for (const record of [...v.cases].sort((a, b) =>
       a.id.localeCompare(b.id),
     )) {
@@ -58,12 +75,34 @@ export async function assign(req, res) {
         409,
         "A case changed. Refresh and assign the team again",
       );
-      const next = [
-        ...new Set([
-          ...(v.mode === "add" ? c.data.teamMemberIds || [] : []),
-          ...ids,
-        ]),
-      ];
+      if (managedStaff)
+        assert(
+          !ids.includes(c.staff_id) && !ids.includes(c.manager_id),
+          403,
+          "Primary responsibilities are managed by the owner",
+        );
+      const existing = c.data.teamMemberIds || [];
+      assert(
+        members.rows.every(
+          (m) =>
+            (m.status === "Active" && !m.deleted_at) ||
+            (user.role === "owner" && existing.includes(m.id)),
+        ),
+        422,
+        "New team members must be active; remove inactive members or leave existing assignments unchanged",
+      );
+      const preserved =
+        v.mode === "add"
+          ? existing
+          : managedStaff
+            ? existing.filter(
+                (id) =>
+                  !managedStaff.has(id) ||
+                  id === c.staff_id ||
+                  id === c.manager_id,
+              )
+            : [];
+      const next = [...new Set([...preserved, ...ids])];
       assert(
         next.length <= 100,
         422,

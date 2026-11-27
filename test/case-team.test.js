@@ -75,6 +75,8 @@ test("shared case teams enforce access, protect membership, export complete sele
       staff = await user("staff", "staff", manager.id),
       extraManager = await user("extraManager", "manager"),
       extra = await user("extraStaff", "staff", extraManager.id),
+      ownExtra = await user("extraOwn2", "staff", extraManager.id),
+      protectedManager = await user("protectedManager", "manager"),
       stranger = await user("stranger", "staff", manager.id),
       customer = await user("customer", "customer");
     const actor = await findUser(owner.id),
@@ -160,7 +162,7 @@ test("shared case teams enforce access, protect membership, export complete sele
           user: managerActor,
           body: {
             cases: [before, await current("case-two")],
-            memberIds: [stranger.id],
+            memberIds: [ownExtra.id],
             mode: "add",
           },
         },
@@ -191,17 +193,28 @@ test("shared case teams enforce access, protect membership, export complete sele
     );
     await assign(
       {
+        user: actor,
+        body: {
+          cases: [await current("case-one")],
+          memberIds: [stranger.id, protectedManager.id],
+          mode: "add",
+        },
+      },
+      response(),
+    );
+    await assign(
+      {
         user: managerActor,
         body: {
           cases: [await current("case-one")],
-          memberIds: [stranger.id],
+          memberIds: [ownExtra.id],
           mode: "add",
         },
       },
       response(),
     );
     assert.equal(
-      (await accessibleCase(await findUser(stranger.id), "case-one")).staff_id,
+      (await accessibleCase(await findUser(ownExtra.id), "case-one")).staff_id,
       staff.id,
     );
     await assign(
@@ -209,7 +222,7 @@ test("shared case teams enforce access, protect membership, export complete sele
         user: managerActor,
         body: {
           cases: [await current("case-one")],
-          memberIds: [extra.id, extraManager.id],
+          memberIds: [extra.id],
         },
       },
       response(),
@@ -226,6 +239,65 @@ test("shared case teams enforce access, protect membership, export complete sele
         response(),
       ),
       (e) => e.status === 422,
+    );
+    assert(
+      (
+        await accessibleCase(managerActor, "case-one")
+      ).data.teamMemberIds.includes(extraManager.id),
+    );
+    await assert.rejects(
+      assign(
+        {
+          user: managerActor,
+          body: { cases: [await current("case-one")], memberIds: [manager.id] },
+        },
+        response(),
+      ),
+      (e) => e.status === 403,
+    );
+    await assert.rejects(
+      assign(
+        {
+          user: managerActor,
+          body: {
+            cases: [await current("case-one")],
+            memberIds: [stranger.id],
+          },
+        },
+        response(),
+      ),
+      (e) => e.status === 403,
+    );
+    await pool.query(
+      "UPDATE legalflow.users SET permissions='{\"cases.edit\":true}' WHERE id=$1",
+      [managerActor.id],
+    );
+    const editVersion = await current("case-one");
+    await assert.rejects(
+      transaction((db) =>
+        saveCase(db, managerActor, {
+          ...record("case-one"),
+          ...editVersion,
+          staffId: extra.id,
+          managerId: extraManager.id,
+        }),
+      ),
+      (e) => e.status === 403,
+    );
+    const { bulkUpdate } =
+      await import("../src/controllers/case-import.controller.js");
+    await assert.rejects(
+      bulkUpdate(
+        {
+          user: managerActor,
+          body: {
+            cases: [await current("case-one")],
+            patch: { staffId: extra.id },
+          },
+        },
+        response(),
+      ),
+      (e) => e.status === 403,
     );
     const pdf = response();
     await exportCases(
@@ -288,6 +360,21 @@ test("shared case teams enforce access, protect membership, export complete sele
       ).getPageCount(),
       merged.getPageCount(),
     );
+    await assign(
+      {
+        user: managerActor,
+        body: { cases: [await current("case-one")], memberIds: [] },
+      },
+      response(),
+    );
+    const kept = await accessibleCase(managerActor, "case-one");
+    assert.deepEqual(kept.data.teamMemberIds, [
+      extraManager.id,
+      stranger.id,
+      protectedManager.id,
+    ]);
+    assert.equal(kept.staff_id, staff.id);
+    assert.equal(kept.manager_id, manager.id);
     await assign(
       {
         user: actor,

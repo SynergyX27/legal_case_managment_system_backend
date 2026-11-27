@@ -36,6 +36,13 @@ export async function saveCase(db, user, input, metadata = {}) {
       409,
       "This case changed on another device. Reopen the case and apply your changes again",
     );
+    if (req.user.role !== "owner")
+      assert(
+        (old.staff_id || "") === (v.staffId || "") &&
+          (old.manager_id || "") === (v.managerId || ""),
+        403,
+        "Only the owner can change primary staff and manager assignments. Use Assign team for additional staff",
+      );
     if (old.client_id !== v.clientId)
       assert(
         !(
