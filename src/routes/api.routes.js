@@ -1,3 +1,4 @@
+import * as companyFiles from "../controllers/company-files.controller.js";
 import { permissionPolicy } from "../middleware/permissions.js";
 import * as fileManager from "../controllers/file-manager.controller.js";
 import { exportCases } from "../controllers/case-export.controller.js";
@@ -199,9 +200,9 @@ const upload = multer({
   limits: {
     fileSize: env.MAX_FILE_MB * 1024 * 1024,
     files: 1,
-    fields: 6,
+    fields: 8,
     fieldSize: 200,
-    parts: 7,
+    parts: 9,
   },
 });
 const uploadLimit = rateLimit({
@@ -211,6 +212,15 @@ const uploadLimit = rateLimit({
   legacyHeaders: false,
   message: { error: "Too many uploads. Try again in a minute" },
 });
+api.get("/company-folders",companyFiles.folders);
+api.post("/company-folders",companyFiles.saveFolder);
+api.patch("/company-folders/:id",companyFiles.saveFolder);
+api.delete("/company-folders/:id",companyFiles.removeFolder);
+api.get("/company-files",companyFiles.files);
+api.post("/company-files",uploadLimit,upload.single("file"),companyFiles.upload);
+api.patch("/company-files/:id",companyFiles.editFile);
+api.get("/company-files/:id/content",companyFiles.content);
+api.delete("/company-files/:id",companyFiles.removeFile);
 api.get("/file-manager/review-queue", fileManager.reviewQueue);
 api.get("/file-manager/folders", fileManager.folders);
 api.get("/file-manager/cases/:id/collections", fileManager.collections);

@@ -288,6 +288,7 @@ export function documentView(d) {
     type: d.kind,
     mime: d.mime,
     bytes: Number(d.bytes),
+    companyFolderId:d.company_folder_id||"",
     collectionId: d.collection_id || "",
     approval: d.approval || "approved",
     updatedAt: d.updated_at?.toISOString(),
@@ -297,6 +298,6 @@ export function documentView(d) {
         : `${(d.bytes / 1048576).toFixed(1)} MB`,
     uploadedAt: d.created_at.toISOString(),
     uploadedBy: d.uploader || "",
-    url: `/api/documents/${d.id}/content`,
+    url: d.case_id?`/api/documents/${d.id}/content`:`/api/company-files/${d.id}/content`,
   };
 }

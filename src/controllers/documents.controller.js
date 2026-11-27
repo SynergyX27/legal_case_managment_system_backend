@@ -37,8 +37,7 @@ export async function authorizeDocument(u, id, write = false, db = pool) {
     404,
     "Document not found",
   );
-  await collectionAccess(u, d.collection_id, db);
-  if (write) fileEditAccess(u, d);
+  if(d.case_id){await collectionAccess(u,d.collection_id,db);if(write)fileEditAccess(u,d);}
   return d;
 }
 const kindPlaceholder = (mime) =>
@@ -78,6 +77,8 @@ export async function upload(req, res) {
     "This pending upload belongs to another signed-in account",
   );
   const caseId = req.body.caseId || null;
+  const companyFolderId=req.body.companyFolderId?idSchema.parse(req.body.companyFolderId):null;
+  assert(!caseId||!companyFolderId,422,"A case file cannot be placed in a company folder");
   if (caseId) await accessibleCase(req.user, caseId, pool, { write: true });
   else {
     owner(req.user);
@@ -117,6 +118,7 @@ export async function upload(req, res) {
     assert(
       existing.uploaded_by === req.user.id &&
         existing.case_id === caseId &&
+        (existing.company_folder_id||null)===companyFolderId &&
         (!existing.upload_hash || existing.upload_hash === uploadHash),
       409,
       "Upload identifier already used",
@@ -126,7 +128,7 @@ export async function upload(req, res) {
       409,
       "This upload is awaiting repair. Ask the owner to reconcile documents before retrying",
     );
-    await collectionAccess(req.user, existing.collection_id, pool);
+    if(existing.case_id)await collectionAccess(req.user, existing.collection_id, pool);
     if (existing.state === "ready") return res.json(documentView(existing));
   }
   const collectionId = caseId
@@ -176,9 +178,11 @@ export async function upload(req, res) {
           : mime.includes("sheet") || mime.includes("excel")
             ? "excel"
             : "other";
+  await transaction(async db=>{
+    if(!caseId){await db.query("SELECT pg_advisory_xact_lock(hashtext('legalflow-company-folders'))");if(companyFolderId)assert((await db.query("SELECT 1 FROM legalflow.company_folders WHERE id=$1 FOR KEY SHARE",[companyFolderId])).rowCount,422,"Company folder no longer exists. Refresh before uploading");}
   // A durable reservation lets the repair script reconcile an interrupted remote upload.
-  await pool.query(
-    "INSERT INTO legalflow.documents(id,case_id,name,mime,bytes,kind,dropbox_path,uploaded_by,state,collection_id,approval,upload_hash) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'uploading',$9,$10,$11) ON CONFLICT(id) DO NOTHING",
+  await db.query(
+    "INSERT INTO legalflow.documents(id,case_id,name,mime,bytes,kind,dropbox_path,uploaded_by,state,collection_id,approval,upload_hash,company_folder_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'uploading',$9,$10,$11,$12) ON CONFLICT(id) DO NOTHING",
     [
       id,
       caseId,
@@ -191,14 +195,17 @@ export async function upload(req, res) {
       collectionId,
       caseId ? "pending" : "approved",
       uploadHash,
+      companyFolderId,
     ],
   );
+  });
   const reserved = (
     await pool.query("SELECT * FROM legalflow.documents WHERE id=$1", [id])
   ).rows[0];
   assert(
     reserved?.uploaded_by === req.user.id &&
       reserved.case_id === caseId &&
+      (reserved.company_folder_id||null)===companyFolderId &&
       reserved.upload_hash === uploadHash &&
       ["uploading", "ready"].includes(reserved.state),
     409,

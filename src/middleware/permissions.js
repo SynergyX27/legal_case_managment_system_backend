@@ -5,7 +5,8 @@ export function permissionPolicy(req, res, next) {
     u = req.user;
   if (isSuper(u) || u.role === "customer") return next();
   let key;
-  if (p.startsWith("/permissions/")) key = "permissions.manage";
+  if(p.startsWith("/company-folders")||p.startsWith("/company-files"))key="company.manage";
+  else if (p.startsWith("/permissions/")) key = "permissions.manage";
   else if (p.startsWith("/users")) key = "users.manage";
   else if (
     p.startsWith("/integrations/") ||

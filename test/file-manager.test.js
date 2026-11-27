@@ -1,4 +1,5 @@
 import test from "node:test";
+import {readFile} from "node:fs/promises";
 import assert from "node:assert/strict";
 import { PGlite } from "@electric-sql/pglite";
 import { PGLiteSocketServer } from "@electric-sql/pglite-socket";
@@ -57,6 +58,7 @@ test("file manager approvals, direct file authorization, retry idempotency and c
   const nativeFetch = globalThis.fetch;
   try {
     await migrate();
+    await pool.query(await readFile(new URL("../../Company_Folders_Database_Update.sql",import.meta.url),"utf8"));
     async function user(username, role, managerId) {
       return createUserRecord(
         {
@@ -82,6 +84,30 @@ test("file manager approvals, direct file authorization, retry idempotency and c
       member = await findUser(extra.id),
       managerActor = await findUser(extraManager.id),
       customerActor = await findUser(customer.id);
+    const companyResponse=()=>({value:null,json(v){this.value=v;return this;}});
+    const company = await import("../src/controllers/company-files.controller.js");
+    const folderResponse=companyResponse();
+    await company.saveFolder({user:actor,params:{},body:{name:"Policies"}},folderResponse);
+    const folderId=folderResponse.value.id;
+    await assert.rejects(()=>company.saveFolder({user:actor,params:{},body:{name:"policies"}},companyResponse()),/already uses/);
+    await assert.rejects(()=>company.folders({user:managerActor,query:{}},companyResponse()));
+    await assert.rejects(()=>company.folders({user:customerActor,query:{}},companyResponse()));
+    await pool.query("INSERT INTO legalflow.documents(id,name,mime,bytes,kind,dropbox_path,uploaded_by,state,approval) VALUES('company-test','policy.pdf','application/pdf',50,'pdf','/company/test',$1,'ready','approved')",[actor.id]);
+    const unfiledResponse=companyResponse();
+    await company.files({user:actor,query:{}},unfiledResponse);
+    assert.equal(unfiledResponse.value.files[0].name,'policy.pdf');
+    await company.editFile({user:actor,params:{id:'company-test'},body:{updatedAt:unfiledResponse.value.files[0].updatedAt,folderId,name:'renamed.pdf'}},companyResponse());
+    const foldersResponse=companyResponse();await company.folders({user:actor,query:{}},foldersResponse);
+    const folderVersion=foldersResponse.value.folders[0].updatedAt;
+    assert.equal(foldersResponse.value.folders[0].files,1);
+    await assert.rejects(()=>company.removeFolder({user:actor,params:{id:folderId},body:{updatedAt:folderVersion}},companyResponse()),/Move or delete/);
+    await assert.rejects(()=>company.editFile({user:actor,params:{id:'company-test'},body:{updatedAt:'2000-01-01T00:00:00.000Z',name:'stale.pdf'}},companyResponse()),/File changed/);
+    const fileResponse=companyResponse();await company.files({user:actor,query:{folderId}},fileResponse);
+    assert.equal(fileResponse.value.files[0].name,'renamed.pdf');
+    assert.match(fileResponse.value.files[0].url,/company-files/);
+    await company.editFile({user:actor,params:{id:'company-test'},body:{updatedAt:fileResponse.value.files[0].updatedAt,folderId:''}},companyResponse());
+    await company.removeFolder({user:actor,params:{id:folderId},body:{updatedAt:folderVersion}},companyResponse());
+    await pool.query("DELETE FROM legalflow.documents WHERE id='company-test'");
     const record = (id) => ({
       id,
       number: id,
