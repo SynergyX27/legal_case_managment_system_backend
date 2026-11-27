@@ -194,6 +194,37 @@ test("file manager approvals, direct file authorization, retry idempotency and c
     );
     const pending = await uploadFile("pending-one");
     assert.equal(pending.approval, "pending");
+    const reviewAlerts = async () =>
+      (
+        await pool.query(
+          "SELECT * FROM legalflow.notifications WHERE kind='file-review' AND link LIKE '%collectionId=writ&%'",
+        )
+      ).rows;
+    assert.deepEqual(
+      (await reviewAlerts()).map((n) => n.user_id).sort(),
+      [actor.id, office.id].sort(),
+    );
+    assert.match((await reviewAlerts())[0].text, /1 file awaiting approval/);
+    const queue = response();
+    await fm.reviewQueue({ user: office, query: {} }, queue);
+    assert.equal(queue.value.totalFiles, 1);
+    const unrelatedQueue = response();
+    await fm.reviewQueue({ user: managerActor, query: {} }, unrelatedQueue);
+    assert.equal(unrelatedQueue.value.totalFiles, 0);
+    await assert.rejects(
+      fm.reviewQueue({ user: customerActor, query: {} }, response()),
+      (e) => e.status === 403,
+    );
+    await pool.query(
+      "UPDATE legalflow.notifications SET read=true WHERE kind='file-review'",
+    );
+    await uploadFile("pending-one");
+    assert((await reviewAlerts()).every((n) => n.read));
+    await uploadFile("review-second");
+    assert.equal((await reviewAlerts()).length, 2);
+    assert((await reviewAlerts()).every((n) => !n.read));
+    assert.match((await reviewAlerts())[0].text, /2 files awaiting approval/);
+
     assert.equal(
       (await workspace(customerActor)).cases[0].attachments.length,
       0,
@@ -225,6 +256,19 @@ test("file manager approvals, direct file authorization, retry idempotency and c
       (e) => e.status === 403,
     );
     await update(office, pending, "approve");
+    assert.match((await reviewAlerts())[0].text, /1 file awaiting approval/);
+    const second = (
+      await pool.query(
+        "SELECT * FROM legalflow.documents WHERE id='review-second'",
+      )
+    ).rows[0];
+    await update(
+      office,
+      { id: second.id, updatedAt: second.updated_at.toISOString() },
+      "reject",
+    );
+    assert.equal((await reviewAlerts()).length, 0);
+
     assert.equal(
       (await authorizeDocument(customerActor, pending.id)).approval,
       "approved",
@@ -420,6 +464,9 @@ test("file manager approvals, direct file authorization, retry idempotency and c
     );
     assert.equal(snapshot.attachmentsCount, 1002);
     assert.equal(snapshot.attachments.length, 1000);
+    await pool.query("UPDATE legalflow.cases SET manager_id=$2 WHERE id=$1",['case-one',managerActor.id]);
+    assert.equal((await workspace(office)).notifications.filter(n=>n.kind==='file-review').length,0);
+
   } finally {
     globalThis.fetch = nativeFetch;
     await pool.end();

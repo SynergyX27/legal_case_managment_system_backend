@@ -200,6 +200,7 @@ const uploadLimit = rateLimit({
   legacyHeaders: false,
   message: { error: "Too many uploads. Try again in a minute" },
 });
+api.get("/file-manager/review-queue", fileManager.reviewQueue);
 api.get("/file-manager/folders", fileManager.folders);
 api.get("/file-manager/cases/:id/collections", fileManager.collections);
 api.get("/file-manager/cases/:id/files", fileManager.files);

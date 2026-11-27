@@ -222,14 +222,25 @@ export async function workspace(u) {
     companyDocuments: attachments
       .filter((d) => !d.caseId)
       .map(({ caseId, ...d }) => d),
-    notifications: notifications.rows.map((n) => ({
-      id: n.id,
-      kind: n.kind,
-      text: n.text,
-      link: n.link,
-      read: n.read,
-      at: n.at.toISOString(),
-    })),
+    notifications: notifications.rows
+      .filter(
+        (n) =>
+          n.kind !== "file-review" ||
+          (["owner", "manager"].includes(u.role) &&
+            ids.includes(
+              new URL(n.link, "https://legalflow.invalid").searchParams.get(
+                "caseId",
+              ),
+            )),
+      )
+      .map((n) => ({
+        id: n.id,
+        kind: n.kind,
+        text: n.text,
+        link: n.link,
+        read: n.read,
+        at: n.at.toISOString(),
+      })),
     conversations,
     chatRead,
     customFields: fields.rows.map((f) => f.data),

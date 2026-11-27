@@ -1,3 +1,4 @@
+import { syncReviewAlerts } from "../services/file-review-alerts.service.js";
 import { z } from "zod";
 import { randomUUID } from "node:crypto";
 import { pool, transaction } from "../config/database.js";
@@ -153,6 +154,7 @@ export async function updateFiles(req, res) {
     "Enter a valid filename for one file",
   );
   await transaction(async (db) => {
+    const reviewGroups = [];
     if (v.action === "move")
       assert(
         v.collectionId &&
@@ -214,6 +216,10 @@ export async function updateFiles(req, res) {
           review ? req.user.id : null,
         ],
       );
+      reviewGroups.push(
+        { caseId: d.case_id, collectionId: d.collection_id },
+        { caseId: d.case_id, collectionId: collection },
+      );
       await audit(db, req.user, "file." + v.action, d.id);
       await activity(
         db,
@@ -223,6 +229,37 @@ export async function updateFiles(req, res) {
         "attachment",
       );
     }
+    await syncReviewAlerts(db, reviewGroups, {
+      bump: !["approve", "reject"].includes(v.action),
+    });
   });
   res.json({ ok: true, count: v.files.length });
+}
+
+export async function reviewQueue(req, res) {
+  assert(
+    ["owner", "manager"].includes(req.user.role),
+    403,
+    "Only owners and assigned managers can review files",
+  );
+  const v = page.parse(req.query),
+    scope = caseScope(req.user);
+  const rows = (
+    await pool.query(
+      `SELECT c.id AS case_id,c.number,f.id AS collection_id,f.name AS collection_name,count(*)::int AS files,sum(count(*)) OVER() AS total_files,count(*) OVER() AS total_groups FROM legalflow.documents d JOIN legalflow.cases c ON c.id=d.case_id JOIN legalflow.file_collections f ON f.id=d.collection_id WHERE (${scope.sql}) AND d.state='ready' AND d.approval='pending' GROUP BY c.id,c.number,f.id,f.name ORDER BY max(d.updated_at) DESC,c.id,f.id LIMIT 20 OFFSET $${scope.values.length + 1}`,
+      [...scope.values, v.offset],
+    )
+  ).rows;
+  res.json({
+    totalFiles: Number(rows[0]?.total_files || 0),
+    totalGroups: Number(rows[0]?.total_groups || 0),
+    groups: rows.map((r) => ({
+      caseId: r.case_id,
+      caseNumber: r.number,
+      collectionId: r.collection_id,
+      collectionName: r.collection_name,
+      files: r.files,
+    })),
+    hasMore: v.offset + rows.length < Number(rows[0]?.total_groups || 0),
+  });
 }

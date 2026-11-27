@@ -1,3 +1,4 @@
+import { syncReviewAlerts } from "../services/file-review-alerts.service.js";
 import {
   randomUUID,
   randomBytes,
@@ -188,7 +189,16 @@ export async function upload(req, res) {
     "Upload identifier already used",
   );
   if (reserved.state === "ready") return res.json(documentView(reserved));
-  assert((await pool.query("UPDATE legalflow.documents SET updated_at=now() WHERE id=$1 AND state='uploading' RETURNING id",[id])).rowCount,409,"Upload changed; retry the queued file");
+  assert(
+    (
+      await pool.query(
+        "UPDATE legalflow.documents SET updated_at=now() WHERE id=$1 AND state='uploading' RETURNING id",
+        [id],
+      )
+    ).rowCount,
+    409,
+    "Upload changed; retry the queued file",
+  );
   await dropbox.uploadReservedFile(path, req.file.buffer);
   await transaction(async (db) => {
     await accessibleUpload(req.user, caseId, db);
@@ -228,6 +238,21 @@ export async function upload(req, res) {
     await audit(db, req.user, "document.uploaded", id);
     if (caseId)
       await activity(db, req.user, caseId, `Uploaded ${name}`, "attachment");
+    await syncReviewAlerts(
+      db,
+      [
+        { caseId, collectionId },
+        ...(replacement
+          ? [
+              {
+                caseId: replacement.case_id,
+                collectionId: replacement.collection_id,
+              },
+            ]
+          : []),
+      ],
+      { bump: true },
+    );
   });
   if (replacement) {
     try {
@@ -306,15 +331,25 @@ export async function remove(req, res) {
       "UPDATE legalflow.documents SET state='deleting',updated_at=now() WHERE id=$1",
       [row.id],
     );
+    await syncReviewAlerts(db, [
+      { caseId: row.case_id, collectionId: row.collection_id },
+    ]);
     return row;
   });
   try {
     await dropbox.removeFile(d.dropbox_path);
   } catch (e) {
-    await pool.query(
-      "UPDATE legalflow.documents SET state='ready' WHERE id=$1 AND state='deleting'",
-      [d.id],
-    );
+    await transaction(async (db) => {
+      await db.query(
+        "UPDATE legalflow.documents SET state='ready' WHERE id=$1 AND state='deleting'",
+        [d.id],
+      );
+      await syncReviewAlerts(
+        db,
+        [{ caseId: d.case_id, collectionId: d.collection_id }],
+        { bump: true },
+      );
+    });
     throw e;
   }
   await transaction(async (db) => {
