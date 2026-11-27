@@ -226,6 +226,7 @@ export async function sendConversation(
       ? [
           c.staff_id,
           c.manager_id,
+          ...(c.data?.teamMemberIds || []),
           ...(
             await db.query(
               "SELECT id FROM legalflow.users WHERE role='owner' AND status='Active'",

@@ -268,7 +268,7 @@ export async function applyStripeSession(session, event = null) {
       await audit(db, actor, "invoice.paid-online", invoiceId);
       const c = (
         await db.query(
-          "SELECT array_agg(staff_id) AS staff_ids,array_agg(manager_id) AS manager_ids FROM legalflow.cases WHERE id=ANY($1::text[])",
+          "SELECT array_agg(staff_id) AS staff_ids,array_agg(manager_id) AS manager_ids, array_agg(data->'teamMemberIds') AS teams FROM legalflow.cases WHERE id=ANY($1::text[])",
           [invoiceCaseIds(invoice.data)],
         )
       ).rows[0];
@@ -283,6 +283,7 @@ export async function applyStripeSession(session, event = null) {
           payment.user_id,
           ...(c?.manager_ids || []),
           ...(c?.staff_ids || []),
+          ...(c?.teams || []).flatMap((ids) => ids || []),
           ...owners.map((o) => o.id),
         ],
         "invoice",

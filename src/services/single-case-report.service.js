@@ -10,7 +10,7 @@ const money = (v) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(
     Number(v) || 0,
   );
-export async function image(id, caseId) {
+export async function image(id, caseId, user) {
   if (!id) return null;
   const d = (
     await pool.query(
@@ -21,6 +21,7 @@ export async function image(id, caseId) {
   assert(
     d &&
       (caseId ? d.case_id === caseId : !d.case_id) &&
+      (user?.role !== "customer" || d.approval === "approved") &&
       ["image/png", "image/jpeg"].includes(d.mime) &&
       Number(d.bytes) <= 5 * 1024 * 1024,
     422,
@@ -51,7 +52,7 @@ export async function singleCasePdf(user, id, photoId) {
   const names = (
     await pool.query(
       "SELECT id,name FROM legalflow.users WHERE id=ANY($1::text[])",
-      [[row.staff_id, row.manager_id].filter(Boolean)],
+      [[row.staff_id, row.manager_id, ...(row.data.teamMemberIds || [])].filter(Boolean)],
     )
   ).rows;
   const customFields = (
@@ -62,7 +63,7 @@ export async function singleCasePdf(user, id, photoId) {
   const logo = p.logoDocumentId
     ? await image(p.logoDocumentId, null).catch(() => null)
     : null;
-  const photo = photoId ? await image(photoId, id) : null;
+  const photo = photoId ? await image(photoId, id, user) : null;
   const doc = new PDFDocument({
     size: "A4",
     margin: 48,
@@ -161,6 +162,7 @@ export async function singleCasePdf(user, id, photoId) {
         ["REF ID#", c.refId],
         ["Customer", client.name || client.company],
         ["Attorney", c.attorney],
+        ["Team Members", names.map(u=>u.name).join(", ")],
         ["Responsible staff", names.find((x) => x.id === row.staff_id)?.name],
         [
           "Responsible manager",
@@ -210,7 +212,7 @@ export async function singleCasePdf(user, id, photoId) {
         ["LOCS", c.locs],
         ["LBX", c.lbx],
         ["Service location", c.serviceLocation],
-        ["Service instructions", c.instructions],
+        ["Service instructions", user.role === "customer" ? "" : c.instructions],
         ...customFields.map((f) => [f.data.label, c.custom?.[f.id]]),
       ],
     ],

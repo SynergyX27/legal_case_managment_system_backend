@@ -36,6 +36,13 @@ export const biller = (u) =>
     403,
     "Invoice permission required",
   );
+export const teamIds = (c) => [
+  ...new Set(
+    [c?.staff_id, c?.manager_id, ...(c?.data?.teamMemberIds || [])].filter(
+      Boolean,
+    ),
+  ),
+];
 export const visible = (u, c) =>
   !!c &&
   u?.status === "Active" &&
@@ -44,9 +51,7 @@ export const visible = (u, c) =>
       ? c.client_id === u.client_id &&
         ((u.customer_access || "all") === "all" ||
           (u.workspace_ids || []).includes(c.workspace_id))
-      : u.role === "manager"
-        ? c.manager_id === u.id
-        : c.staff_id === u.id));
+      : ["manager", "staff"].includes(u.role) && teamIds(c).includes(u.id)));
 export const canMessage = (a, b, cases) =>
   !!a &&
   !!b &&
@@ -60,9 +65,7 @@ export const canMessage = (a, b, cases) =>
       const customer = a.role === "customer" ? a : b;
       const staff = customer === a ? b : a;
       return (
-        internal(staff) &&
-        visible(customer, c) &&
-        (c.staff_id === staff.id || c.manager_id === staff.id)
+        internal(staff) && visible(customer, c) && teamIds(c).includes(staff.id)
       );
     }));
 export function caseScope(u, alias = "c") {
@@ -77,7 +80,7 @@ export function caseScope(u, alias = "c") {
       ],
     };
   return {
-    sql: `${alias}.${u.role === "manager" ? "manager_id" : "staff_id"}=$1`,
+    sql: `(${alias}.${u.role === "manager" ? "manager_id" : "staff_id"}=$1 OR COALESCE(${alias}.data->'teamMemberIds','[]'::jsonb) ? $1)`,
     values: [u.id],
   };
 }

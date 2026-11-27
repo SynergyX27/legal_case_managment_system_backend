@@ -134,7 +134,7 @@ export async function ingestIncoming(
     ).rows.map((u) => u.id);
     await notify(
       db,
-      [...new Set([...owners, c.staff_id, c.manager_id].filter(Boolean))],
+      [...new Set([...owners, c.staff_id, c.manager_id, ...(c.data?.teamMemberIds || [])].filter(Boolean))],
       "message",
       "A customer replied by email",
       "/email",

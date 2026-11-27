@@ -146,7 +146,7 @@ export async function queuePaymentCompleted(db, invoice, method) {
     });
   const team = (
     await db.query(
-      "SELECT id,name,email FROM legalflow.users WHERE status='Active' AND deleted_at IS NULL AND (role='owner' OR id IN (SELECT staff_id FROM legalflow.cases WHERE id=ANY($1::text[]) UNION SELECT manager_id FROM legalflow.cases WHERE id=ANY($1::text[])))",
+      "SELECT id,name,email FROM legalflow.users WHERE status='Active' AND deleted_at IS NULL AND (role='owner' OR id IN (SELECT staff_id FROM legalflow.cases WHERE id=ANY($1::text[]) UNION SELECT manager_id FROM legalflow.cases WHERE id=ANY($1::text[]) UNION SELECT jsonb_array_elements_text(COALESCE(data->'teamMemberIds','[]'::jsonb)) FROM legalflow.cases WHERE id=ANY($1::text[])))",
       [invoiceCaseIds(invoice)],
     )
   ).rows;

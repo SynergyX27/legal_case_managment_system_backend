@@ -56,7 +56,11 @@ export async function saveCase(db, user, input, metadata = {}) {
       "Only the owner can assign or move case workspaces",
     );
   await validateWorkspace(db, workspaceId, v.clientId);
-  await validateAssignments(v, req.user, db);
+  await validateAssignments(
+    { ...v, teamMemberIds: old?.data?.teamMemberIds || [] },
+    req.user,
+    db,
+  );
   if (old && req.user.role === "staff")
     assert(
       old.client_id === v.clientId &&
@@ -101,6 +105,7 @@ export async function saveCase(db, user, input, metadata = {}) {
         ...(territory ? { state: territory } : {}),
         refId,
         ...metadata,
+        teamMemberIds: old?.data?.teamMemberIds || [],
       },
     ],
   );
@@ -129,6 +134,7 @@ export async function saveCase(db, user, input, metadata = {}) {
     [
       v.staffId,
       v.managerId,
+      ...(old?.data?.teamMemberIds || []),
       ...customerUsers
         .filter((u) =>
           visible(u, {

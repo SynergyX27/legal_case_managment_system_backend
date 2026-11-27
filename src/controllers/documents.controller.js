@@ -1,4 +1,9 @@
-import { randomUUID, randomBytes, timingSafeEqual } from "node:crypto";
+import {
+  randomUUID,
+  randomBytes,
+  timingSafeEqual,
+  createHash,
+} from "node:crypto";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { fileTypeFromBuffer } from "file-type";
@@ -11,15 +16,26 @@ import { accessibleCase } from "../models/case.model.js";
 import { audit, activity } from "../models/audit.model.js";
 import { documentView } from "../models/workspace.model.js";
 import * as dropbox from "../services/dropbox.service.js";
-async function authorizeDocument(u, id, write = false, db = pool) {
+export async function authorizeDocument(u, id, write = false, db = pool) {
   const d = (
     await db.query("SELECT * FROM legalflow.documents WHERE id=$1", [id])
   ).rows[0];
   assert(d, 404, "Document not found");
   if (d.case_id) await accessibleCase(u, d.case_id, db, { write });
   else owner(u);
+  assert(
+    u.role !== "customer" || d.approval === "approved",
+    404,
+    "Document not found",
+  );
   return d;
 }
+const kindPlaceholder = (mime) =>
+  mime?.startsWith("image/")
+    ? "image"
+    : mime?.startsWith("video/")
+      ? "video"
+      : "other";
 const allowed = new Set([
   "application/pdf",
   "image/jpeg",
@@ -38,8 +54,18 @@ const allowed = new Set([
   "text/plain",
   "text/csv",
 ]);
+async function accessibleUpload(user, caseId, db) {
+  if (caseId) await accessibleCase(user, caseId, db, { write: true });
+  else owner(user);
+}
 export async function upload(req, res) {
   assert(req.file, 422, "Choose a file");
+  assert(
+    !req.headers["x-upload-user"] ||
+      req.headers["x-upload-user"] === req.user.id,
+    403,
+    "This pending upload belongs to another signed-in account",
+  );
   const caseId = req.body.caseId || null;
   if (caseId) await accessibleCase(req.user, caseId, pool, { write: true });
   else owner(req.user);
@@ -66,6 +92,7 @@ export async function upload(req, res) {
     req.file.originalname.replace(/[\x00-\x1f\x7f/\\]/g, "_").slice(0, 240) ||
     "document";
   const id = idSchema.parse(req.headers["x-upload-id"] || randomUUID());
+  const uploadHash = createHash("sha256").update(req.file.buffer).digest("hex");
   const existing = (
     await pool.query(
       "SELECT d.*,u.name AS uploader FROM legalflow.documents d JOIN legalflow.users u ON u.id=d.uploaded_by WHERE d.id=$1",
@@ -74,16 +101,51 @@ export async function upload(req, res) {
   ).rows[0];
   if (existing) {
     assert(
-      existing.uploaded_by === req.user.id && existing.case_id === caseId,
+      existing.uploaded_by === req.user.id &&
+        existing.case_id === caseId &&
+        (!existing.upload_hash || existing.upload_hash === uploadHash),
       409,
       "Upload identifier already used",
     );
     assert(
-      existing.state === "ready",
+      ["ready", "uploading"].includes(existing.state),
       409,
       "This upload is awaiting repair. Ask the owner to reconcile documents before retrying",
     );
-    return res.json(documentView(existing));
+    if (existing.state === "ready") return res.json(documentView(existing));
+  }
+  const collectionId = caseId
+    ? req.body.collectionId ||
+      (["image", "video"].includes(kindPlaceholder(mime))
+        ? "other-visuals"
+        : "general-docs")
+    : null;
+  if (collectionId)
+    assert(
+      (
+        await pool.query(
+          "SELECT 1 FROM legalflow.file_collections WHERE id=$1",
+          [collectionId],
+        )
+      ).rowCount,
+      422,
+      "Choose a valid file collection",
+    );
+  let replacement = null;
+  if (req.body.replaceId) {
+    replacement = await authorizeDocument(req.user, req.body.replaceId, true);
+    assert(
+      caseId && replacement.case_id === caseId && replacement.state === "ready",
+      422,
+      "Replace a file in the same case",
+    );
+    assert(
+      req.body.updatedAt &&
+        new Date(req.body.updatedAt).getTime() ===
+          replacement.updated_at.getTime(),
+      409,
+      "The original file changed. Refresh before replacing it",
+    );
   }
   const path = `${env.DROPBOX_ROOT}/${caseId ? "cases/" + caseId : "company"}/${id}`;
   const kind = mime.startsWith("image/")
@@ -99,11 +161,67 @@ export async function upload(req, res) {
             : "other";
   // A durable reservation lets the repair script reconcile an interrupted remote upload.
   await pool.query(
-    "INSERT INTO legalflow.documents(id,case_id,name,mime,bytes,kind,dropbox_path,uploaded_by,state) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'uploading')",
-    [id, caseId, name, mime, req.file.size, kind, path, req.user.id],
+    "INSERT INTO legalflow.documents(id,case_id,name,mime,bytes,kind,dropbox_path,uploaded_by,state,collection_id,approval,upload_hash) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'uploading',$9,$10,$11) ON CONFLICT(id) DO NOTHING",
+    [
+      id,
+      caseId,
+      name,
+      mime,
+      req.file.size,
+      kind,
+      path,
+      req.user.id,
+      collectionId,
+      caseId ? "pending" : "approved",
+      uploadHash,
+    ],
   );
-  await dropbox.uploadFile(path, req.file.buffer);
+  const reserved = (
+    await pool.query("SELECT * FROM legalflow.documents WHERE id=$1", [id])
+  ).rows[0];
+  assert(
+    reserved?.uploaded_by === req.user.id &&
+      reserved.case_id === caseId &&
+      reserved.upload_hash === uploadHash &&
+      ["uploading", "ready"].includes(reserved.state),
+    409,
+    "Upload identifier already used",
+  );
+  if (reserved.state === "ready") return res.json(documentView(reserved));
+  assert((await pool.query("UPDATE legalflow.documents SET updated_at=now() WHERE id=$1 AND state='uploading' RETURNING id",[id])).rowCount,409,"Upload changed; retry the queued file");
+  await dropbox.uploadReservedFile(path, req.file.buffer);
   await transaction(async (db) => {
+    await accessibleUpload(req.user, caseId, db);
+    const uploadRow = (
+      await db.query(
+        "SELECT state FROM legalflow.documents WHERE id=$1 FOR UPDATE",
+        [id],
+      )
+    ).rows[0];
+    if (uploadRow?.state === "ready") return;
+    assert(
+      uploadRow?.state === "uploading",
+      409,
+      "Upload was removed. Refresh the folder",
+    );
+    if (replacement) {
+      const old = (
+        await db.query(
+          "SELECT * FROM legalflow.documents WHERE id=$1 FOR UPDATE",
+          [replacement.id],
+        )
+      ).rows[0];
+      assert(
+        old?.state === "ready" &&
+          old.updated_at.getTime() === replacement.updated_at.getTime(),
+        409,
+        "Original file changed while uploading; refresh the folder",
+      );
+      await db.query(
+        "UPDATE legalflow.documents SET state='deleting',approval='pending',updated_at=now() WHERE id=$1",
+        [replacement.id],
+      );
+    }
     await db.query("UPDATE legalflow.documents SET state='ready' WHERE id=$1", [
       id,
     ]);
@@ -111,6 +229,17 @@ export async function upload(req, res) {
     if (caseId)
       await activity(db, req.user, caseId, `Uploaded ${name}`, "attachment");
   });
+  if (replacement) {
+    try {
+      await dropbox.removeFile(replacement.dropbox_path);
+      await pool.query(
+        "DELETE FROM legalflow.documents WHERE id=$1 AND state='deleting'",
+        [replacement.id],
+      );
+    } catch {
+      /* repair queue retains the old file for retry */
+    }
+  }
   const d = (
     await pool.query(
       "SELECT d.*,u.name AS uploader FROM legalflow.documents d JOIN legalflow.users u ON d.uploaded_by=u.id WHERE d.id=$1",
@@ -122,7 +251,18 @@ export async function upload(req, res) {
 export async function content(req, res) {
   const d = await authorizeDocument(req.user, req.params.id);
   assert(d.state === "ready", 409, "This document is not available");
-  const stream = await dropbox.downloadFile(d.dropbox_path);
+  const range = req.headers.range;
+  assert(!range || /^bytes=\d*-\d*$/.test(range), 416, "Unsupported range");
+  const remote = await dropbox.downloadResponse(d.dropbox_path, range);
+  if (remote.status === 416) {
+    res.status(416).set("Content-Range", `bytes */${d.bytes}`).end();
+    return;
+  }
+  const stream = remote.body;
+  res.status(remote.status === 206 ? 206 : 200);
+  res.setHeader("Accept-Ranges", "bytes");
+  if (remote.headers.get("content-range"))
+    res.setHeader("Content-Range", remote.headers.get("content-range"));
   const inline =
     req.query.download !== "1" &&
     [
@@ -136,7 +276,10 @@ export async function content(req, res) {
       "video/quicktime",
     ].includes(d.mime);
   res.setHeader("Content-Type", d.mime);
-  res.setHeader("Content-Length", d.bytes);
+  res.setHeader(
+    "Content-Length",
+    remote.headers.get("content-length") || d.bytes,
+  );
   res.setHeader(
     "Content-Disposition",
     `${inline ? "inline" : "attachment"}; filename="document"; filename*=UTF-8''${encodeURIComponent(d.name).replace(/['()]/g, (c) => "%" + c.charCodeAt(0).toString(16))}`,
@@ -146,11 +289,25 @@ export async function content(req, res) {
   await pipeline(Readable.fromWeb(stream), res);
 }
 export async function remove(req, res) {
-  const d = await authorizeDocument(req.user, req.params.id, true);
-  await pool.query(
-    "UPDATE legalflow.documents SET state='deleting' WHERE id=$1",
-    [d.id],
-  );
+  const d = await transaction(async (db) => {
+    await db.query(
+      "SELECT id FROM legalflow.documents WHERE id=$1 FOR UPDATE",
+      [req.params.id],
+    );
+    const row = await authorizeDocument(req.user, req.params.id, true, db);
+    assert(row.state === "ready", 409, "File is currently being changed");
+    assert(
+      !req.body?.updatedAt ||
+        new Date(req.body.updatedAt).getTime() === row.updated_at.getTime(),
+      409,
+      "The file changed. Refresh before deleting it",
+    );
+    await db.query(
+      "UPDATE legalflow.documents SET state='deleting',updated_at=now() WHERE id=$1",
+      [row.id],
+    );
+    return row;
+  });
   try {
     await dropbox.removeFile(d.dropbox_path);
   } catch (e) {

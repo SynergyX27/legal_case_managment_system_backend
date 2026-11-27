@@ -142,7 +142,7 @@ function apiArg(v) {
     (c) => "\\u" + c.charCodeAt(0).toString(16).padStart(4, "0"),
   );
 }
-async function call(endpoint, { arg, body, json = false } = {}) {
+async function call(endpoint, { arg, body, json = false, range } = {}) {
   let response;
   const token = await accessToken();
   try {
@@ -152,6 +152,7 @@ async function call(endpoint, { arg, body, json = false } = {}) {
         method: "POST",
         headers: {
           Authorization: `Bearer ${token}`,
+          ...(range ? { Range: range } : {}),
           ...(json
             ? { "Content-Type": "application/json" }
             : {
@@ -166,6 +167,7 @@ async function call(endpoint, { arg, body, json = false } = {}) {
   } catch {
     throw new HttpError(502, "Dropbox request failed. Try again");
   }
+  if (response.status === 416 && range) return response;
   if (!response.ok) {
     const v = await response.json().catch(() => ({}));
     if (response.status === 401) cache = null;
@@ -207,6 +209,19 @@ export async function downloadFile(path) {
 
 // Idempotent writes are restricted to server-generated email attachment paths.
 export async function uploadEmailFile(path, buffer) {
+  return (
+    await call("files/upload", {
+      arg: { path, mode: "overwrite", autorename: false, mute: true },
+      body: buffer,
+    })
+  ).json();
+}
+
+export async function downloadResponse(path, range) {
+  return call("files/download", { arg: { path }, range });
+}
+
+export async function uploadReservedFile(path, buffer) {
   return (
     await call("files/upload", {
       arg: { path, mode: "overwrite", autorename: false, mute: true },

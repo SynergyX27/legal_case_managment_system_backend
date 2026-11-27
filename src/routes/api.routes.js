@@ -1,3 +1,6 @@
+import * as fileManager from "../controllers/file-manager.controller.js";
+import { exportCases } from "../controllers/case-export.controller.js";
+import * as caseTeam from "../controllers/case-team.controller.js";
 import * as publicInvoice from "../controllers/public-invoice.controller.js";
 import * as invoicePicker from "../controllers/invoice-picker.controller.js";
 import * as invoiceDelivery from "../controllers/invoice-delivery.controller.js";
@@ -150,6 +153,8 @@ api.post(
   rateLimit({ windowMs: 60000, limit: 5 }),
   caseReports.email,
 );
+api.post("/reports/cases/export", importLimit, exportCases);
+api.patch("/cases/team", importLimit, caseTeam.assign);
 api.patch("/cases/bulk", importLimit, caseImport.bulkUpdate);
 api.get("/cases/:id/report/pdf", importLimit, singleReport.pdf);
 api.post(
@@ -183,18 +188,24 @@ const upload = multer({
   limits: {
     fileSize: env.MAX_FILE_MB * 1024 * 1024,
     files: 1,
-    fields: 1,
-    fieldSize: 100,
-    parts: 2,
+    fields: 6,
+    fieldSize: 200,
+    parts: 7,
   },
 });
 const uploadLimit = rateLimit({
   windowMs: 60000,
-  limit: 15,
+  limit: 120,
   standardHeaders: "draft-8",
   legacyHeaders: false,
   message: { error: "Too many uploads. Try again in a minute" },
 });
+api.get("/file-manager/folders", fileManager.folders);
+api.get("/file-manager/cases/:id/collections", fileManager.collections);
+api.get("/file-manager/cases/:id/files", fileManager.files);
+api.put("/file-manager/collections/:id", fileManager.saveCollection);
+api.delete("/file-manager/collections/:id", fileManager.removeCollection);
+api.patch("/file-manager/files", fileManager.updateFiles);
 api.post("/documents", uploadLimit, upload.single("file"), d.upload);
 api.get("/documents/:id/content", d.content);
 api.delete("/documents/:id", d.remove);

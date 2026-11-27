@@ -9,7 +9,7 @@ export async function workspace(u) {
     pool,
     (
       await pool.query(
-        `SELECT c.* FROM legalflow.cases c WHERE ${scope.sql} ORDER BY created_at DESC`,
+        `SELECT c.*,(SELECT count(*)::int FROM legalflow.documents d WHERE d.case_id=c.id AND d.state='ready' ${u.role === "customer" ? "AND d.approval='approved'" : ""}) AS attachment_count FROM legalflow.cases c WHERE ${scope.sql} ORDER BY created_at DESC`,
         scope.values,
       )
     ).rows,
@@ -84,8 +84,8 @@ export async function workspace(u) {
         )
       : Promise.resolve({ rows: [] }),
     pool.query(
-      "SELECT d.*,u.name AS uploader FROM legalflow.documents d JOIN legalflow.users u ON u.id=d.uploaded_by WHERE d.state='ready' AND (d.case_id=ANY($1::text[]) OR ($2::boolean AND d.case_id IS NULL))",
-      [ids, u.role === "owner"],
+      "SELECT d.*,u.name AS uploader FROM ((SELECT * FROM legalflow.documents WHERE state='ready' AND ($3::boolean OR approval='approved') AND case_id=ANY($1::text[]) ORDER BY created_at DESC,id LIMIT 1000) UNION ALL (SELECT * FROM legalflow.documents WHERE state='ready' AND case_id IS NULL AND $2::boolean)) d JOIN legalflow.users u ON u.id=d.uploaded_by",
+      [ids, u.role === "owner", u.role !== "customer"],
     ),
     u.role !== "customer"
       ? pool.query(
@@ -196,6 +196,7 @@ export async function workspace(u) {
       createdAt: c.created_at.toISOString(),
       updatedAt: c.updated_at.toISOString(),
       ...(u.role === "customer" ? { notes: "", instructions: "" } : {}),
+      attachmentsCount: c.attachment_count,
       attachments: attachments
         .filter((d) => d.caseId === c.id)
         .map(({ caseId, ...d }) => d),
@@ -242,6 +243,11 @@ export function documentView(d) {
     caseId: d.case_id,
     name: d.name,
     type: d.kind,
+    mime: d.mime,
+    bytes: Number(d.bytes),
+    collectionId: d.collection_id || "",
+    approval: d.approval || "approved",
+    updatedAt: d.updated_at?.toISOString(),
     size:
       d.bytes < 1048576
         ? `${Math.max(1, Math.round(d.bytes / 1024))} KB`

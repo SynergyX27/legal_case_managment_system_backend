@@ -507,6 +507,9 @@ test("HTTP API, PostgreSQL persistence and access isolation", async (t) => {
         200,
       );
       assert.equal(remoteFiles.size, 1);
+      assert.equal((await customer.request(`/documents/${uploadId}/content`)).status,404);
+      assert.equal(uploaded.data.approval,'pending');
+      assert.equal((await owner.request('/file-manager/files',{method:'PATCH',body:{action:'approve',files:[{id:uploadId,updatedAt:uploaded.data.updatedAt}]}})).status,200);
       const download = await nativeFetch(
         root + `/documents/${uploadId}/content`,
         { headers: { Cookie: customer.cookie } },

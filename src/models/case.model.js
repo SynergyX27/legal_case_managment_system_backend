@@ -33,9 +33,10 @@ export async function validateAssignments(c, u, db) {
   );
   assert(
     (
-      await db.query("SELECT 1 FROM legalflow.clients WHERE id=$1 AND data->>'deleted' IS DISTINCT FROM 'true'", [
-        c.clientId,
-      ])
+      await db.query(
+        "SELECT 1 FROM legalflow.clients WHERE id=$1 AND data->>'deleted' IS DISTINCT FROM 'true'",
+        [c.clientId],
+      )
     ).rowCount,
     422,
     "Select a valid customer",
@@ -55,13 +56,13 @@ export async function validateAssignments(c, u, db) {
         422,
         `Select an active ${role}`,
       );
-  if (u.role === "manager")
+  if (u.role === "manager" && !c.teamMemberIds?.includes(u.id))
     assert(
       c.managerId === u.id,
       403,
       "Managers must remain assigned to their cases",
     );
-  if (u.role === "staff")
+  if (u.role === "staff" && !c.teamMemberIds?.includes(u.id))
     assert(
       c.staffId === u.id,
       403,

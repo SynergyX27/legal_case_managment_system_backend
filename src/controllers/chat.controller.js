@@ -13,7 +13,7 @@ export async function startChat(req, res) {
     const other = await findUser(otherId, db);
     const cases = (
       await db.query(
-        "SELECT client_id,staff_id,manager_id,workspace_id FROM legalflow.cases WHERE client_id=$1 OR client_id=$2",
+        "SELECT client_id,staff_id,manager_id,workspace_id,data FROM legalflow.cases WHERE client_id=$1 OR client_id=$2",
         [req.user.client_id, other?.client_id],
       )
     ).rows;
@@ -56,7 +56,7 @@ async function authorizeConversation(req, db) {
   assert(other, 404, "This conversation participant has been deleted");
   const cases = (
     await db.query(
-      "SELECT client_id,staff_id,manager_id,workspace_id FROM legalflow.cases WHERE client_id=$1 OR client_id=$2",
+      "SELECT client_id,staff_id,manager_id,workspace_id,data FROM legalflow.cases WHERE client_id=$1 OR client_id=$2",
       [req.user.client_id, other.client_id],
     )
   ).rows;
