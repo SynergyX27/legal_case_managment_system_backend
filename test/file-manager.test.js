@@ -490,6 +490,17 @@ test("file manager approvals, direct file authorization, retry idempotency and c
     );
     assert.equal(snapshot.attachmentsCount, 1002);
     assert.equal(snapshot.attachments.length, 1000);
+    for (const [ext,mime] of Object.entries({mp3:"audio/mpeg",wav:"audio/wav",m4a:"audio/mp4",aac:"audio/aac",ogg:"audio/ogg"})) {
+      const buffer=await readFile(new URL(`./fixtures/audio/sample.${ext}`,import.meta.url));
+      for(const companyFile of [false,true]){
+        const r=response();const fileId=`audio-${companyFile?'company':'case'}-${ext}`;
+        await upload({user:companyFile?actor:field,body:companyFile?{}:{caseId:"case-one",collectionId:"general-docs"},headers:{"x-upload-id":fileId},file:{originalname:`recording.${ext}`,buffer,size:buffer.length}},r);
+        assert.equal(r.value.type,"audio");assert.equal(r.value.mime,mime);
+        assert.equal(r.value.approval,companyFile?"approved":"pending");
+        await assert.rejects(()=>authorizeDocument(customerActor,fileId));
+      }
+    }
+    await assert.rejects(()=>upload({user:actor,body:{},headers:{},file:{originalname:"fake.mp3",buffer:Buffer.from("not audio"),size:9}},response()),/Supported files/);
     await pool.query("UPDATE legalflow.cases SET manager_id=$2 WHERE id=$1",['case-one',managerActor.id]);
     assert.equal((await workspace(office)).notifications.filter(n=>n.kind==='file-review').length,0);
 

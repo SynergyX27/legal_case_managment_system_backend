@@ -57,7 +57,7 @@ export async function files(req, res) {
   const v = page
     .extend({
       kind: z
-        .enum(["", "image", "video", "pdf", "word", "excel", "other"])
+        .enum(["", "image", "video", "audio", "pdf", "word", "excel", "other"])
         .default(""),
       collectionId: z.string().max(150).default(""),
       approval: z.enum(["", "pending", "approved", "rejected"]).default(""),
