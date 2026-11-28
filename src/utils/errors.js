@@ -1,11 +1,13 @@
+import { userError, readableError } from "./user-errors.js";
 export class HttpError extends Error {
-  constructor(status, message) {
+  constructor(status, message, context) {
     super(message);
     this.status = status;
+    this.userContext = context;
   }
 }
-export const assert = (condition, status, message) => {
-  if (!condition) throw new HttpError(status, message);
+export const assert = (condition, status, message, context) => {
+  if (!condition) throw new HttpError(status, message, context);
 };
 export function errorHandler(err, req, res, next) {
   if (res.headersSent) return next(err);
@@ -35,7 +37,7 @@ export function errorHandler(err, req, res, next) {
     message = "File exceeds the configured upload size limit";
   }
   if (err.name === "MulterError") {
-    status = 422;
+    status = err.code === "LIMIT_FILE_SIZE" ? 413 : 422;
     message =
       err.code === "LIMIT_FILE_SIZE"
         ? "File exceeds the configured upload size limit"
@@ -44,18 +46,55 @@ export function errorHandler(err, req, res, next) {
   if (status >= 500)
     console.error(
       JSON.stringify({
-        event: "legalflow.request.failed", requestId,
-        code: err.code || err.name || "UNKNOWN", status,
-        method: req.method, route: req.route?.path,
-        operation: err.operation, step: err.failureStep,
+        event: "legalflow.request.failed",
+        requestId,
+        code: err.code || err.name || "UNKNOWN",
+        status,
+        method: req.method,
+        route: req.route?.path,
+        operation: err.operation,
+        step: err.failureStep,
         // Names and stack frames identify failures without logging SQL, values,
         // request bodies, credentials, cookies or provider responses.
-        table: err.table, constraint: err.constraint,
-        frames: typeof err.stack === "string" ? err.stack.split("\n").slice(1, 5).map(s => s.trim()) : undefined,
+        table: err.table,
+        constraint: err.constraint,
+        frames:
+          typeof err.stack === "string"
+            ? err.stack
+                .split("\n")
+                .slice(1, 5)
+                .map((s) => s.trim())
+            : undefined,
       }),
     );
-  const diagnostic = status >= 500 && err.operation === "case.delete" && req.user?.role === "owner"
-    ? {diagnosticCode: err.code || err.name || "UNKNOWN", failedStep: err.failureStep}
-    : {};
-  res.status(status).json({ error: message, requestId, ...diagnostic });
+  const diagnostic =
+    status >= 500 &&
+    err.operation === "case.delete" &&
+    req.user?.role === "owner"
+      ? {
+          diagnosticCode: err.code || err.name || "UNKNOWN",
+          failedStep: err.failureStep,
+        }
+      : {};
+  const info = userError(
+    {
+      ...err,
+      name: err.name,
+      message:
+        status >= 500 && !(err instanceof HttpError)
+          ? "Service unavailable"
+          : message,
+    },
+    req,
+    status,
+  );
+  res.status(status).json({
+    error: readableError(info, requestId, status),
+    title: info.title,
+    code: info.code,
+    guidance: info.steps,
+    fieldErrors: info.fieldErrors,
+    requestId,
+    ...diagnostic,
+  });
 }

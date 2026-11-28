@@ -104,7 +104,7 @@ export function createApp() {
   );
   app.use("/api", api);
   app.use("/api", (req, res) =>
-    res.status(404).json({ error: "API endpoint not found" }),
+    res.status(404).json({ error: "This action is not available. Refresh LegalFlow and try again. If it continues, contact your administrator.",code:"ACTION_UNAVAILABLE" }),
   );
   const dist = path.resolve(env.FRONTEND_DIST);
   if (existsSync(path.join(dist, "index.html"))) {

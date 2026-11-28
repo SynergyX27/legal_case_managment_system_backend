@@ -111,7 +111,7 @@ test("transactional email events, recipient routing, retry leases and failure re
     await transaction(async (q) => {
       await queueCaseOpened(q, c);
       await queueCaseOpened(q, c);
-      await queueInvoiceIssued(q, inv);
+      assert.equal((await queueInvoiceIssued(q, inv)).queued,true);
       await queueInvoiceIssued(q, inv);
       await queuePaymentCompleted(q, inv, "manual");
       await queuePaymentCompleted(q, inv, "manual");
@@ -271,6 +271,9 @@ test("transactional email events, recipient routing, retry leases and failure re
       0,
       "Disabled SMTP must not attempt a real connection",
     );
+    await pool.query("UPDATE legalflow.users SET customer_access='community' WHERE id=$1",[customer.id]);
+    const blocked=await transaction(q=>queueInvoiceIssued(q,{...inv,id:'blocked-invoice-no-link'}));
+    assert.deepEqual(blocked,{queued:false},"blocked email should return a visible warning signal without creating a public link");
   } finally {
     await pool.end();
     await socket.stop();

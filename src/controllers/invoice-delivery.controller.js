@@ -78,6 +78,7 @@ export async function email(req, res) {
       visible(recipient, c),
       422,
       "Customer main login must have access to every included case before receiving this invoice",
+      {caseNumber:c.number,unassigned:!c.workspace_id},
     );
   }
   const { url } = await issueInvoiceLink(pool, i.id, req.user.id);

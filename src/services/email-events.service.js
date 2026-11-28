@@ -99,7 +99,8 @@ export async function queueCaseOpened(db, c) {
 }
 export async function queueInvoiceIssued(db, invoice) {
   const recipient = await client(db, invoice.clientId, invoice.caseId);
-  if (!recipient || !(await clientCanSeeInvoice(db, invoice))) return;
+  if (!recipient || !(await clientCanSeeInvoice(db, invoice)))
+    return { queued: false };
   await enqueue(db, `invoice.issued:${invoice.id}`, recipient, {
     title: `Invoice ${invoice.number} issued`,
     description:
@@ -111,6 +112,7 @@ export async function queueInvoiceIssued(db, invoice) {
     ],
     url: (await issueInvoiceLink(db, invoice.id)).url,
   });
+  return { queued: true, sendingEnabled: env.SMTP_ENABLED };
 }
 export async function queuePaymentCompleted(db, invoice, method) {
   const c = (

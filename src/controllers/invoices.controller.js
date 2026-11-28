@@ -17,6 +17,7 @@ import { audit, activity, notify } from "../models/audit.model.js";
 import * as schema from "../validators/schemas.js";
 export async function putInvoice(req, res) {
   const v = schema.invoiceInput.parse({ ...req.body, id: req.params.id });
+  const warnings = [];
   await transaction(async (db) => {
     const ids = invoiceCaseIds(v);
     const cases = [];
@@ -188,8 +189,30 @@ export async function putInvoice(req, res) {
     else if (
       ["Sent", "Overdue"].includes(v.status) &&
       (!old || old.data.status === "Draft")
-    )
-      await queueInvoiceIssued(db, data);
+    ) {
+      const delivery = await queueInvoiceIssued(db, data);
+      if (delivery?.queued === false)
+        warnings.push(
+          [
+            "Invoice saved, but the customer email was not queued.",
+            req.user.role === "owner"
+              ? "1. Open Customers and check the main login’s Active status and email."
+              : "1. Ask the owner to check the main login’s Active status and email in Customers.",
+            req.user.role === "owner"
+              ? "2. Check each included case’s community and Workspaces → Customer access. If those controls are unavailable, ask a Super Admin."
+              : "2. Ask the owner to check each included case’s community and its customer access.",
+            "3. After correction, open this invoice and choose Email PDF. Do not create another invoice.",
+          ].join("\n"),
+        );
+      else if (delivery?.sendingEnabled === false)
+        warnings.push(
+          "Invoice saved and its email is queued, but company email sending is disabled. " +
+            (req.user.role === "owner"
+              ? "Open Settings and check the email connection; ask a Super Admin or your support person if setup is unavailable."
+              : "Ask the owner to check the email connection in Settings.") +
+            " Queued does not mean delivered.",
+        );
+    }
     for (const caseId of ids)
       await activity(db, req.user, caseId, `${number}: ${v.status}`, "invoice");
     await audit(db, req.user, "invoice.saved", v.id);
@@ -214,7 +237,7 @@ export async function putInvoice(req, res) {
       );
     }
   });
-  res.json({ ok: true });
+  res.json({ ok: true, warnings });
 }
 
 export async function deleteInvoice(req, res) {
